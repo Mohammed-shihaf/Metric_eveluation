@@ -119,55 +119,62 @@ def _test_body(t, imports, cases):
 
 
 def gen_tests_full(abbrev):
-    """Full tests on all modules — used for BugFX and TCC."""
+    """Full tests on the target metric module only (non-target modules are stubs)."""
     t = gen.FUTURE
     files = {"tests/__init__.py": t}
-    files["tests/test_execution_path_integrity.py"] = _test_body(
-        t,
-        "import unittest\nfrom sa.execution_path_integrity import evaluate_path_integrity, route_handler_1\n",
-        " def test_default(self):\n  self.assertEqual(evaluate_path_integrity(5, 'fast', {}), 'ok-5')\n"
-        " def test_audit(self):\n  self.assertEqual(evaluate_path_integrity(3, 'audit', {}), 'audit-3')\n"
-        " def test_route(self):\n  self.assertEqual(route_handler_1({'value': 1}), 'ok-1')\n",
-    )
-    files["tests/test_decision_coverage.py"] = _test_body(
-        t,
-        "import unittest\nfrom sa.decision_coverage import decision_case_0, aggregate_decision_coverage\n",
-        " def test_started(self):\n  self.assertTrue(decision_case_0('ready', True, 0).startswith('started'))\n"
-        " def test_failed(self):\n  self.assertTrue(decision_case_0('failed', False, 0).startswith('failed'))\n"
-        " def test_aggregate_empty(self):\n  self.assertEqual(aggregate_decision_coverage([]), 1.0)\n",
-    )
-    files["tests/test_condition_coverage.py"] = _test_body(
-        t,
-        "import unittest\nfrom sa.condition_coverage import condition_check_0, validate_all_conditions\n",
-        " def test_accept(self):\n  self.assertEqual(condition_check_0(True,True,False,True,True), 'accept-0')\n"
-        " def test_partial(self):\n  self.assertEqual(condition_check_0(False,True,True,False,False), 'partial-0')\n"
-        " def test_validate(self):\n  self.assertEqual(len(validate_all_conditions([{'a':True,'b':True,'c':False,'d':True,'flag':True}])), 1)\n",
-    )
-    files["tests/test_logic_combinatorial.py"] = _test_body(
-        t,
-        "import unittest\nfrom sa.logic_combinatorial import count_unique_paths, combinatorial_state_machine_0\n",
-        " def test_paths(self):\n  self.assertEqual(count_unique_paths('x', 3), 8)\n"
-        " def test_machine(self):\n  self.assertTrue(combinatorial_state_machine_0([True, False]))\n",
-    )
-    files["tests/test_technical_debt.py"] = _test_body(
-        t,
-        "import unittest\nfrom sa.technical_debt import debt_calculator_b0_v0\n",
-        " def test_ok(self):\n  self.assertTrue(debt_calculator_b0_v0(100, 0.1, 2) >= 0)\n",
-    )
-    files["tests/test_qa_prioritization.py"] = _test_body(
-        t,
-        "import unittest\nfrom sa.qa_prioritization import prioritize_test_bucket_0\n",
-        " def test_rank(self):\n  self.assertEqual(prioritize_test_bucket_0([{'name':'a','complexity':1}], {}), [('a', 'low')])\n",
-    )
+    if abbrev == "EPI":
+        files["tests/test_execution_path_integrity.py"] = _test_body(
+            t,
+            "import unittest\nfrom sa.execution_path_integrity import evaluate_path_integrity, route_handler_1\n",
+            " def test_default(self):\n  self.assertEqual(evaluate_path_integrity(5, 'fast', {}), 'ok-5')\n"
+            " def test_audit(self):\n  self.assertEqual(evaluate_path_integrity(3, 'audit', {}), 'audit-3')\n"
+            " def test_route(self):\n  self.assertEqual(route_handler_1({'value': 1}), 'ok-1')\n",
+        )
+    elif abbrev == "DOV":
+        files["tests/test_decision_coverage.py"] = _test_body(
+            t,
+            "import unittest\nfrom sa.decision_coverage import decision_case_0, aggregate_decision_coverage\n",
+            " def test_started(self):\n  self.assertTrue(decision_case_0('ready', True, 0).startswith('started'))\n"
+            " def test_failed(self):\n  self.assertTrue(decision_case_0('failed', False, 0).startswith('failed'))\n"
+            " def test_retry(self):\n  self.assertTrue(decision_case_0('ready', False, 5).startswith('retry'))\n"
+            " def test_aggregate_empty(self):\n  self.assertEqual(aggregate_decision_coverage([]), 1.0)\n",
+        )
+    elif abbrev == "LSV":
+        files["tests/test_condition_coverage.py"] = _test_body(
+            t,
+            "import unittest\nfrom sa.condition_coverage import condition_check_0, validate_all_conditions\n",
+            " def test_accept(self):\n  self.assertEqual(condition_check_0(True,True,False,True,True), 'accept-0')\n"
+            " def test_partial(self):\n  self.assertEqual(condition_check_0(False,True,True,False,False), 'partial-0')\n"
+            " def test_validate(self):\n  self.assertEqual(len(validate_all_conditions([{'a':True,'b':True,'c':False,'d':True,'flag':True}])), 1)\n",
+        )
+    elif abbrev == "TLCC":
+        files["tests/test_logic_combinatorial.py"] = _test_body(
+            t,
+            "import unittest\nfrom sa.logic_combinatorial import count_unique_paths, combinatorial_state_machine_0\n",
+            " def test_paths(self):\n  self.assertEqual(count_unique_paths('x', 3), 8)\n"
+            " def test_machine(self):\n  self.assertTrue(combinatorial_state_machine_0([True, False]))\n",
+        )
+    elif abbrev == "TDI":
+        files["tests/test_technical_debt.py"] = _test_body(
+            t,
+            "import unittest\nfrom sa.technical_debt import debt_calculator_b0_v0\n",
+            " def test_ok(self):\n  self.assertTrue(debt_calculator_b0_v0(100, 0.1, 2) >= 0)\n",
+        )
+    elif abbrev == "QRA":
+        files["tests/test_qa_prioritization.py"] = _test_body(
+            t,
+            "import unittest\nfrom sa.qa_prioritization import prioritize_test_bucket_0\n",
+            " def test_rank(self):\n  self.assertEqual(prioritize_test_bucket_0([{'name':'a','complexity':1}], {}), [('a', 'low')])\n",
+        )
     return files
 
 
 def gen_tests_bug_partial(abbrev):
-    """Bug branch: full tests on clean modules, weak tests on buggy target."""
-    files = gen_tests_full(abbrev)
+    """Bug branch: weak tests on buggy target module only."""
     t = gen.FUTURE
+    files = {"tests/__init__.py": t}
     if abbrev == "EPI":
-        del files["tests/test_execution_path_integrity.py"]
+        return files
     elif abbrev == "DOV":
         files["tests/test_decision_coverage.py"] = _test_body(
             t,
@@ -187,7 +194,7 @@ def gen_tests_bug_partial(abbrev):
             " def test_zero(self):\n  self.assertEqual(count_unique_paths('x', 0), 0)\n",
         )
     elif abbrev == "TDI":
-        del files["tests/test_technical_debt.py"]
+        return files
     elif abbrev == "QRA":
         files["tests/test_qa_prioritization.py"] = _test_body(
             t,
