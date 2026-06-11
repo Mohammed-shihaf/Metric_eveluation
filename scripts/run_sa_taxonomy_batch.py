@@ -14,6 +14,7 @@ from __future__ import print_function
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -25,6 +26,10 @@ from datetime import datetime, timezone
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TERMINAL_STATUSES = frozenset(["completed", "failed", "partial", "cancelled"])
 IN_FLIGHT_STATUSES = frozenset(["pending", "queued", "running", "executing", "in_progress"])
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 
 
 def load_env(path):
@@ -51,6 +56,7 @@ class PlatformClient(object):
     def _request(self, method, url, body=None, accept=None):
         req = urllib.request.Request(url, method=method)
         req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", BROWSER_USER_AGENT)
         if accept:
             req.add_header("Accept", accept)
         if self.session_token:
@@ -75,10 +81,23 @@ class PlatformClient(object):
         return self._request("POST", url, body=body)
 
 
+def resolve_tenant_id(client):
+    """Resolve tenant from the authenticated session (QA/live friendly)."""
+    data = client.get_json("%s/v1/me/tenant" % client.identity_url)
+    tenant_id = data.get("tenant_id")
+    if not tenant_id:
+        raise RuntimeError("Session tenant missing from /v1/me/tenant: %s" % data)
+    return str(tenant_id)
+
+
 def login(identity_url, email, password):
     url = "%s/api/v1/auth/login" % identity_url.rstrip("/")
     req = urllib.request.Request(url, method="POST")
     req.add_header("Content-Type", "application/json")
+    req.add_header("User-Agent", BROWSER_USER_AGENT)
+    req.add_header("Origin", os.environ.get("FRONTEND_URL", "https://qa-frontend.testable.cc"))
+    req.add_header("Referer", "%s/auth/login" % os.environ.get(
+        "FRONTEND_URL", "https://qa-frontend.testable.cc").rstrip("/"))
     req.data = json.dumps({"identifier": email, "password": password}).encode("utf-8")
     try:
         resp = urllib.request.urlopen(req, timeout=60)
@@ -186,14 +205,19 @@ def wait_for_branches(client, repository_id, required_names, poll_interval=10, t
     started = time.time()
     branch_map = {}
     while time.time() - started < timeout_sec:
-        branches_resp = client.get_json(
-            "%s/v1/repositories/%s/branches" % (client.runtime_url, repository_id))
+        try:
+            branches_resp = client.get_json(
+                "%s/v1/repositories/%s/branches" % (client.runtime_url, repository_id))
+        except Exception as exc:
+            print("  branch poll error: %s (retrying...)" % exc, flush=True)
+            time.sleep(poll_interval)
+            continue
         branch_list = branches_resp.get("branches") or branches_resp.get("items") or []
         branch_map = {b.get("name"): b for b in branch_list if b.get("name")}
         missing = [n for n in required_names if n not in branch_map]
         if not missing:
             return branch_map
-        print("  waiting for branches (missing: %s)..." % missing)
+        print("  waiting for branches (missing: %s)..." % missing, flush=True)
         time.sleep(poll_interval)
     return branch_map
 
@@ -344,6 +368,52 @@ def ensure_dir(path):
         os.makedirs(path)
 
 
+def export_html_reports(batch_dir):
+    """Build UI-format HTML from saved taxonomy-gate.json files."""
+    html_script = os.path.join(ROOT, "scripts", "export_taxonomy_html.ts")
+    web_console = os.environ.get(
+        "WEB_CONSOLE_DIR",
+        os.path.join(os.path.dirname(ROOT), "ai-testable-platform", "frontend", "web-console"),
+    )
+    if not os.path.isfile(html_script):
+        print("  WARNING: HTML export script not found: %s" % html_script, flush=True)
+        return False
+    if not os.path.isdir(web_console):
+        print("  WARNING: web-console not found: %s" % web_console, flush=True)
+        return False
+    print("\n=== Export HTML reports ===", flush=True)
+    npx = shutil.which("npx")
+    if not npx and sys.platform == "win32":
+        npx = shutil.which("npx.cmd")
+    if not npx:
+        print("  WARNING: npx not found on PATH", flush=True)
+        return False
+    result = subprocess.run(
+        [npx, "--yes", "tsx", "--tsconfig", "tsconfig.json", html_script, batch_dir],
+        cwd=web_console,
+        shell=False,
+    )
+    return result.returncode == 0
+
+
+def prune_to_html_only(batch_dir):
+    """Keep manifest.json and *.html per branch; remove intermediate JSON/XML."""
+    removed = 0
+    for name in os.listdir(batch_dir):
+        branch_dir = os.path.join(batch_dir, name)
+        if not os.path.isdir(branch_dir):
+            continue
+        for fn in os.listdir(branch_dir):
+            if fn.endswith(".html"):
+                continue
+            path = os.path.join(branch_dir, fn)
+            if os.path.isfile(path):
+                os.remove(path)
+                removed += 1
+    if removed:
+        print("  removed %d non-HTML artifact(s)" % removed, flush=True)
+
+
 def save_report(output_dir, branch_name, run_id, summary, taxonomy_json, taxonomy_xml):
     branch_dir = os.path.join(output_dir, branch_name)
     ensure_dir(branch_dir)
@@ -380,6 +450,24 @@ def parse_args():
         action="store_true",
         help="Run only branches present in catalog (skip missing)",
     )
+    parser.add_argument(
+        "--export-html",
+        action="store_true",
+        default=os.environ.get("EXPORT_HTML", "true").lower() == "true",
+        help="Generate taxonomy-gate HTML after batch (default: true)",
+    )
+    parser.add_argument(
+        "--no-export-html",
+        action="store_false",
+        dest="export_html",
+        help="Skip HTML export",
+    )
+    parser.add_argument(
+        "--html-only",
+        action="store_true",
+        default=os.environ.get("HTML_ONLY", "false").lower() == "true",
+        help="After HTML export, delete JSON/XML/run_id files (keep .html + manifest)",
+    )
     return parser.parse_args()
 
 
@@ -405,10 +493,6 @@ def main():
     require_run_completed = os.environ.get("REQUIRE_RUN_COMPLETED", "true").lower() == "true"
     taxonomy_poll_timeout = int(os.environ.get("TAXONOMY_POLL_TIMEOUT_SEC", str(poll_timeout)))
 
-    if not tenant_id:
-        print("ERROR: TENANT_ID is required", file=sys.stderr)
-        return 1
-
     print("=== Authenticate ===", flush=True)
     if args.skip_login:
         token = os.environ.get("SESSION_TOKEN")
@@ -419,11 +503,28 @@ def main():
         if not email or not password:
             print("ERROR: AUTH_EMAIL and AUTH_PASSWORD required", file=sys.stderr)
             return 1
-        dev_verify(identity_url, email)
+        if "localhost" in identity_url or "127.0.0.1" in identity_url:
+            dev_verify(identity_url, email)
         token = login(identity_url, email, password)
-        print("  logged in as %s" % email)
+        print("  logged in as %s" % email, flush=True)
 
     client = PlatformClient(identity_url, runtime_url, views_url, token)
+
+    env_tenant_id = tenant_id
+    try:
+        tenant_id = resolve_tenant_id(client)
+        print("  tenant_id=%s (from session)" % tenant_id, flush=True)
+        if env_tenant_id and env_tenant_id != tenant_id:
+            print(
+                "  WARNING: TENANT_ID in .env.local differs from session — using session tenant",
+                flush=True,
+            )
+    except Exception as exc:
+        if not tenant_id:
+            print("ERROR: could not resolve tenant — set TENANT_ID or fix login: %s" % exc,
+                  file=sys.stderr)
+            return 1
+        print("  WARNING: using TENANT_ID from env (%s): %s" % (tenant_id, exc), flush=True)
 
     if args.ensure_project:
         clone_url = os.environ.get(
@@ -534,7 +635,16 @@ def main():
     manifest_path = os.path.join(output_dir, "manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2)
+
+    if args.export_html:
+        if export_html_reports(output_dir):
+            if args.html_only:
+                prune_to_html_only(output_dir)
+        else:
+            print("  WARNING: HTML export failed — JSON/XML kept in %s" % output_dir, flush=True)
+
     print("\n=== Done ===")
+    print("Reports: %s" % output_dir)
     print("Manifest: %s" % manifest_path)
     return 0
 

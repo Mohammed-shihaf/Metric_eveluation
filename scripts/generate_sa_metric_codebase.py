@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import generate_sa_codebase as gen  # noqa: E402
 from sa_metric_modules import (  # noqa: E402
-    MODULE_BUG_CLEAN,
     gen_bulk_empty,
     gen_metric_stub,
     generate_module_content,
@@ -65,13 +64,15 @@ def gen_readme_metric(branch_name, abbrev, metric_name, classification, branch_t
         for _, abbr, cls, met, tool in SA_METRICS
     )
     note = BRANCH_TYPE_DESC.get(branch_type, branch_type)
-    defect_line = (
-        "- Only `%s.py` contains intentional defects; all other SA modules are clean.\n"
-        % ABBREV_TO_MODULE[abbrev]
-        if branch_type == "Bug"
-        else "- All SA modules are clean (`%s.py` includes the fixed target-metric code).\n"
-        % ABBREV_TO_MODULE[abbrev]
-    )
+    target_file = ABBREV_TO_MODULE[abbrev]
+    if branch_type == "Bug":
+        defect_line = "- Only `%s.py` contains intentional defects; all other SA modules are stubs.\n" % target_file
+    elif branch_type == "BugFX":
+        defect_line = "- `%s.py` has bugs fixed; other SA modules remain minimal stubs.\n" % target_file
+    elif branch_type == "TCC":
+        defect_line = "- `%s.py` uses tool-optimized clean code (distinct from BugFX/CC).\n" % target_file
+    else:
+        defect_line = "- `%s.py` uses general clean code (distinct structure from TCC/BugFX).\n" % target_file
     return (
         "# %s\n\n"
         "Python 2.6 Structural Analysis — **metric-scoped %s branch**.\n\n"
@@ -196,10 +197,50 @@ def gen_tests_bug_partial(abbrev):
     return files
 
 
+def gen_tests_cc_smoke(abbrev):
+    """Minimal import smoke tests — CC branches rely on clean code, not full suites."""
+    t = gen.FUTURE
+    target = {
+        "EPI": ("execution_path_integrity", "evaluate_path_integrity", "1, 'fast', {}"),
+        "DOV": ("decision_coverage", "decision_case_0", "'ready', True, 0"),
+        "LSV": ("condition_coverage", "condition_check_0", "True, True, False, True, True"),
+        "TLCC": ("logic_combinatorial", "count_unique_paths", "'fn', 2"),
+        "TDI": ("technical_debt", "debt_calculator_b0_v0", "10, 0.1, 1"),
+        "QRA": ("qa_prioritization", "prioritize_test_bucket_0", "[{'name':'m','complexity':1}], {}"),
+    }[abbrev]
+    mod, fn, args = target
+    return {
+        "tests/__init__.py": t,
+        "tests/test_%s_smoke.py" % mod: _test_body(
+            t,
+            "import unittest\nfrom sa.%s import %s\n" % (mod, fn),
+            " def test_smoke(self):\n  self.assertTrue(%s(%s))\n" % (fn, args),
+        ),
+    }
+
+
+def gen_tests_tcc(abbrev):
+    """Full tests on all modules; target metric gets tool-oriented coverage cases."""
+    files = gen_tests_full(abbrev)
+    t = gen.FUTURE
+    if abbrev == "DOV":
+        files["tests/test_decision_coverage.py"] = _test_body(
+            t,
+            "import unittest\nfrom sa.decision_coverage import decision_case_0, aggregate_decision_coverage\n",
+            " def test_started(self):\n  self.assertTrue(decision_case_0('ready', True, 0, 1).startswith('started'))\n"
+            " def test_failed(self):\n  self.assertTrue(decision_case_0('failed', False, 0, 1).startswith('failed'))\n"
+            " def test_priority(self):\n  self.assertTrue(decision_case_0('queued', True, 0, 9).startswith('priority'))\n"
+            " def test_aggregate(self):\n  self.assertEqual(aggregate_decision_coverage([{'covered': True}]), 1.0)\n",
+        )
+    return files
+
+
 def gen_tests_metric(abbrev, branch_type):
     if branch_type == "CC":
-        return {}
-    if branch_type in ("BugFX", "TCC"):
+        return gen_tests_cc_smoke(abbrev)
+    if branch_type == "TCC":
+        return gen_tests_tcc(abbrev)
+    if branch_type == "BugFX":
         return gen_tests_full(abbrev)
     if branch_type == "Bug":
         return gen_tests_bug_partial(abbrev)

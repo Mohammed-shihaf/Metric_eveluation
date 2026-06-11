@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Run all 24 metric-scoped SA branches on Testable and collect taxonomy reports.
+Run metric-scoped SA branches on Testable; one batch exports HTML to taxonomy_reports/.
 
-6 metrics (EPI, DOV, LSV, TLCC, TDI, QRA) × 4 types (Bug, BugFX, TCC, CC).
+Default: EPI × 4 types (Bug, BugFX, TCC, CC) in a single run, HTML-only output.
 
 Usage:
-  py -3 scripts/run_sa_metric_taxonomy_batch.py
+  py -3 scripts/run_sa_metric_taxonomy_batch.py --refresh-branches
+  py -3 scripts/run_sa_metric_taxonomy_batch.py --metric all
+  py -3 scripts/run_sa_metric_taxonomy_batch.py --keep-intermediate
   py -3 scripts/run_sa_metric_taxonomy_batch.py --dry-run --refresh-branches
-  py -3 scripts/run_sa_metric_taxonomy_batch.py --metric EPI
-  py -3 scripts/run_sa_metric_taxonomy_batch.py --skip-html
 """
 
 from __future__ import print_function
@@ -35,23 +35,6 @@ def branches_for_args(metric, branch_types, version):
         for bt in types:
             out.append(branch_name(abbrev, bt, version))
     return out
-
-
-def export_html(batch_dir):
-    html_script = os.path.join(ROOT, "scripts", "export_taxonomy_html.ts")
-    web_console = os.environ.get(
-        "WEB_CONSOLE_DIR",
-        os.path.join(os.path.dirname(ROOT), "ai-testable-platform", "frontend", "web-console"),
-    )
-    if not os.path.isfile(html_script) or not os.path.isdir(web_console):
-        print("  SKIP HTML export (web-console or export script not found)", flush=True)
-        return False
-    print("\n=== Export HTML reports ===", flush=True)
-    result = subprocess.run(
-        ["npx", "--yes", "tsx", "--tsconfig", "tsconfig.json", html_script, batch_dir],
-        cwd=web_console,
-    )
-    return result.returncode == 0
 
 
 def verify_html(batch_dir):
@@ -86,8 +69,8 @@ def parse_args():
     parser.add_argument(
         "--metric",
         choices=metric_choices,
-        default="all",
-        help="Run one metric (EPI, DOV, ...) or all six (default)",
+        default="EPI",
+        help="Run one metric (EPI, DOV, ...) or all six (default: EPI)",
     )
     parser.add_argument(
         "--branch-types",
@@ -99,6 +82,11 @@ def parse_args():
     parser.add_argument("--refresh-branches", action="store_true")
     parser.add_argument("--allow-partial-branches", action="store_true")
     parser.add_argument("--skip-html", action="store_true", help="Do not export HTML after batch")
+    parser.add_argument(
+        "--keep-intermediate",
+        action="store_true",
+        help="Keep JSON/XML files (default: HTML-only in taxonomy_reports)",
+    )
     parser.add_argument("--skip-verify", action="store_true", help="Do not run HTML verification")
     parser.add_argument(
         "--pair-validate",
@@ -108,7 +96,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_batch(env_file, branches_csv, dry_run, refresh, allow_partial):
+def run_batch(env_file, branches_csv, dry_run, refresh, allow_partial, export_html=True, html_only=True):
     batch_script = os.path.join(ROOT, "scripts", "run_sa_taxonomy_batch.py")
     cmd = [
         sys.executable,
@@ -122,10 +110,16 @@ def run_batch(env_file, branches_csv, dry_run, refresh, allow_partial):
         cmd.append("--refresh-branches")
     if allow_partial:
         cmd.append("--allow-partial-branches")
+    if export_html:
+        cmd.append("--export-html")
+    else:
+        cmd.append("--no-export-html")
+    if html_only:
+        cmd.append("--html-only")
     return subprocess.run(cmd, cwd=ROOT)
 
 
-def pair_validate_metric(env_file, abbrev, version, refresh, allow_partial, skip_html, skip_verify):
+def pair_validate_metric(env_file, abbrev, version, refresh, allow_partial, skip_html, skip_verify, html_only):
     """Run Bug then BugFX for one metric; validate Bug EPI/target fails before running fix branch."""
     from sa_metrics import branch_name, ABBREV_TO_CLASSIFICATION
 
@@ -135,13 +129,12 @@ def pair_validate_metric(env_file, abbrev, version, refresh, allow_partial, skip
 
     print("\n=== Pair validation: %s ===" % abbrev, flush=True)
     print("  [1/2] %s (expect %s FAIL)" % (bug_branch, target_cls), flush=True)
-    rc = run_batch(env_file, bug_branch, False, refresh, allow_partial)
+    rc = run_batch(env_file, bug_branch, False, refresh, allow_partial,
+                   export_html=not skip_html, html_only=html_only)
     if rc.returncode != 0:
         return rc.returncode
 
     batch_dir = latest_batch_dir(os.environ.get("OUTPUT_DIR", "taxonomy_reports"))
-    if batch_dir and not skip_html:
-        export_html(batch_dir)
     if batch_dir:
         bug_html = glob_html(batch_dir, bug_branch)
         if bug_html:
@@ -154,12 +147,11 @@ def pair_validate_metric(env_file, abbrev, version, refresh, allow_partial, skip
             print("WARNING: no HTML for %s — check taxonomy JSON manually" % bug_branch, flush=True)
 
     print("  [2/2] %s (expect %s PASS/WARN)" % (fix_branch, target_cls), flush=True)
-    rc = run_batch(env_file, fix_branch, False, refresh, allow_partial)
+    rc = run_batch(env_file, fix_branch, False, refresh, allow_partial,
+                   export_html=not skip_html, html_only=html_only)
     if rc.returncode != 0:
         return rc.returncode
     batch_dir = latest_batch_dir(os.environ.get("OUTPUT_DIR", "taxonomy_reports"))
-    if batch_dir and not skip_html:
-        export_html(batch_dir)
     if batch_dir and not skip_verify:
         fix_html = glob_html(batch_dir, fix_branch)
         if fix_html:
@@ -194,13 +186,15 @@ def main():
                 if line.startswith("OUTPUT_DIR="):
                     os.environ.setdefault("OUTPUT_DIR", line.split("=", 1)[1].strip())
 
+    html_only = not args.keep_intermediate
+
     if args.pair_validate:
         abbrevs = [abbrev for _, abbrev, _, _, _ in SA_METRICS] if args.metric == "all" else [args.metric]
         for abbrev in abbrevs:
             rc = pair_validate_metric(
                 args.env_file, abbrev, args.version,
                 args.refresh_branches, args.allow_partial_branches,
-                args.skip_html, args.skip_verify,
+                args.skip_html, args.skip_verify, html_only,
             )
             if rc != 0:
                 return rc
@@ -221,6 +215,8 @@ def main():
     result = run_batch(
         args.env_file, branches_csv, args.dry_run,
         args.refresh_branches, args.allow_partial_branches,
+        export_html=not args.skip_html,
+        html_only=html_only,
     )
     if result.returncode != 0:
         return result.returncode
@@ -228,23 +224,12 @@ def main():
     if args.dry_run:
         return 0
 
-    # Load OUTPUT_DIR from env file for post-processing
-    if os.path.isfile(args.env_file):
-        with open(args.env_file, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line.startswith("OUTPUT_DIR="):
-                    os.environ.setdefault("OUTPUT_DIR", line.split("=", 1)[1].strip())
-
     batch_dir = latest_batch_dir(os.environ.get("OUTPUT_DIR", "taxonomy_reports"))
     if not batch_dir:
-        print("WARNING: no batch output directory found for HTML export", flush=True)
+        print("WARNING: no batch output directory found", flush=True)
         return 0
 
     print("\n  batch output: %s" % batch_dir, flush=True)
-
-    if not args.skip_html:
-        export_html(batch_dir)
 
     if not args.skip_verify:
         verify_rc = verify_html(batch_dir)

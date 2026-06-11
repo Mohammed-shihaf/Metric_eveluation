@@ -30,7 +30,7 @@ py -3 scripts/deploy_one_branch.py SA_bug_2.6
 ## Run taxonomy batch (Testable platform)
 
 1. Copy `.env.example` to `.env.local` and fill credentials.
-2. Ensure platform is running (`http://localhost:3000`).
+2. Ensure platform is reachable (QA: [qa-frontend.testable.cc](https://qa-frontend.testable.cc/auth/login); local: `http://localhost:3000`).
 3. Connect GitHub SCM in the UI (required for all branches to appear).
 4. Run:
 

@@ -41,7 +41,12 @@ def all_metric_branches_csv(version="2.6", branch_types=None):
 
 
 def module_variant(module_key, target_module_key, branch_type):
-    """Only the target metric module is buggy on Bug branches; all other types are clean."""
-    if branch_type == "Bug" and module_key == target_module_key:
-        return "bug"
-    return "cc"
+    """Map branch type to target-module code variant (non-target modules use stubs)."""
+    if module_key != target_module_key:
+        return "stub"
+    return {
+        "Bug": "bug",
+        "BugFX": "bugfx",
+        "TCC": "tcc",
+        "CC": "cc",
+    }[branch_type]
