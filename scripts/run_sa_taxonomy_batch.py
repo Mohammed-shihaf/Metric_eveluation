@@ -14,6 +14,7 @@ from __future__ import print_function
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -127,6 +128,22 @@ def resolve_commit_sha(branch_name, branch_row, repository_match):
                 return sha
         except Exception as exc:
             print("  GitHub SHA lookup failed: %s" % exc)
+    # Fallback: local git ls-remote (works when repo is cloned and remote configured)
+    try:
+        proc = subprocess.Popen(
+            ["git", "ls-remote", "origin", "refs/heads/%s" % branch_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=ROOT,
+        )
+        out, _ = proc.communicate(timeout=30)
+        line = out.decode("utf-8", errors="replace").strip().splitlines()
+        if line:
+            sha = line[0].split()[0]
+            print("  resolved commit via git ls-remote: %s" % sha[:12])
+            return sha
+    except Exception as exc:
+        print("  git ls-remote failed: %s" % exc)
     return None
 
 
@@ -326,7 +343,7 @@ def main():
         print("ERROR: TENANT_ID is required", file=sys.stderr)
         return 1
 
-    print("=== Authenticate ===")
+    print("=== Authenticate ===", flush=True)
     if args.skip_login:
         token = os.environ.get("SESSION_TOKEN")
         if not token:
