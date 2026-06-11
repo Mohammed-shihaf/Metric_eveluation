@@ -34,6 +34,7 @@ BROWSER_USER_AGENT = (
 
 def load_env(path):
     if not os.path.isfile(path):
+        print("WARNING: env file not found: %s" % path, file=sys.stderr, flush=True)
         return
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -501,7 +502,10 @@ def main():
             return 1
     else:
         if not email or not password:
-            print("ERROR: AUTH_EMAIL and AUTH_PASSWORD required", file=sys.stderr)
+            print(
+                "ERROR: AUTH_EMAIL and AUTH_PASSWORD required (copy .env.example to .env.local)",
+                file=sys.stderr,
+            )
             return 1
         if "localhost" in identity_url or "127.0.0.1" in identity_url:
             dev_verify(identity_url, email)

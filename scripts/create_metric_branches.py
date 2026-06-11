@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from sa_metrics import all_metric_branches  # noqa: E402
 
-KEEP = {".git", "build", "scripts", ".gitignore"}
+KEEP = {".git", "build", "scripts", ".gitignore", ".env.local"}
 
 
 def run(cmd, cwd=ROOT):
