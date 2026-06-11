@@ -44,14 +44,11 @@ def deploy_branch(branch):
             shutil.copytree(s, d)
         else:
             shutil.copy2(s, d)
-    paths = []
-    for candidate in [
-        ".gitignore", "README.md", "main.py", "requirements.txt", "versions.txt",
-        "sa", "tests", ".coveragerc", ".testmondata.ini", "pytest.ini", "setup.cfg",
-    ]:
-        if os.path.exists(os.path.join(ROOT, candidate)):
-            paths.append(candidate)
-    run(["git", "add"] + paths)
+    add_paths = ["sa", "tests", "README.md", "main.py", "requirements.txt", "versions.txt"]
+    for optional in (".coveragerc", ".testmondata.ini", "pytest.ini", "setup.cfg"):
+        if os.path.exists(os.path.join(ROOT, optional)):
+            add_paths.append(optional)
+    run(["git", "add", "-A"] + add_paths)
     run(["git", "commit", "-m", "Add metric-scoped SA %s Python 2.6 codebase" % branch])
 
 

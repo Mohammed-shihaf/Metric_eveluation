@@ -9,6 +9,7 @@ from __future__ import print_function
 
 import argparse
 import os
+import shutil
 import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -294,6 +295,8 @@ def generate_metric(root, abbrev, branch_type="Bug", version="2.6"):
         return generate_module_content(
             module_key, module_variant(module_key, target_module, branch_type))
 
+    if os.path.isdir(root):
+        shutil.rmtree(root)
     gen.ensure_dir(root)
     mapping = {
         "sa/__init__.py": gen.gen_init(),
