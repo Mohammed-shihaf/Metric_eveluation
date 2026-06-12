@@ -1,3 +1,9 @@
 # Notebook dependencies (generation + validation)
 jupyter>=1.0.0
 ipykernel>=6.0.0
+pyyaml>=6.0
+openpyxl>=3.1.0
+
+# Full-matrix generation (412 branches) is disk-heavy; allow ~1–2 GB under build/
+# and 15–45 minutes runtime on a typical laptop. Use TECHNIQUES/METRICS overrides
+# in notebooks/generate_branches.ipynb for smaller partial runs.

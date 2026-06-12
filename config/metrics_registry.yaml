@@ -1,0 +1,3042 @@
+version: '3.0'
+source: Book.xlsx
+branch_types:
+- Bug
+- BugFX
+- TCC
+- CC
+techniques:
+- technique_code: SA
+  l2: Structural Analysis
+  l3: Cyclomatic Complexity
+  report_group_label: Structural Analysis
+  metrics:
+  - metric_code: EPI
+    module_key: execution_path_integrity
+    l4_classification: Static Analysis Metric
+    l5_metric: Execution Path Integrity
+    taxonomy_classification: Static Analysis Metric
+    tools:
+      python:
+        primary: Crosshair
+        secondary: Mccabe
+      c:
+        primary: lizard
+        secondary: cyclomatic
+      cpp:
+        primary: Lizard
+        secondary: cyclomatic
+      java:
+        primary: CK
+        secondary: Pmd
+      csharp:
+        primary: lizard
+        secondary: csharp cyclomatic
+      javascript:
+        primary: Lizard
+        secondary: Plato
+      typescript:
+        primary: Lizard
+        secondary: Plato
+    source_row: 6
+  - metric_code: DOV
+    module_key: decision_coverage
+    l4_classification: Decision Coverage
+    l5_metric: Decision Outcome Verification
+    taxonomy_classification: Decision Coverage
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: Mccabe
+      c:
+        primary: lizard
+        secondary: cyclomatic
+      cpp:
+        primary: Lizard
+        secondary: cyclomatic
+      java:
+        primary: CK
+        secondary: Pmd
+      csharp:
+        primary: lizard
+        secondary: csharp cyclomatic
+      javascript:
+        primary: Lizard
+        secondary: Plato
+      typescript:
+        primary: Lizard
+        secondary: Plato
+    source_row: 7
+  - metric_code: LSV
+    module_key: condition_coverage
+    l4_classification: Condition Coverage
+    l5_metric: Logical Sub-expression Validation
+    taxonomy_classification: Condition Coverage
+    tools:
+      python:
+        primary: Pymcdc
+        secondary: Mccabe
+      c:
+        primary: lizard
+        secondary: cyclomatic
+      cpp:
+        primary: Lizard
+        secondary: cyclomatic
+      java:
+        primary: CK
+        secondary: Pmd
+      csharp:
+        primary: lizard
+        secondary: csharp cyclomatic
+      javascript:
+        primary: Lizard
+        secondary: Plato
+      typescript:
+        primary: Lizard
+        secondary: Plato
+    source_row: 8
+  - metric_code: TLCC
+    module_key: logic_combinatorial
+    l4_classification: Logic Coverage Metric
+    l5_metric: Total Logical Combinatorial Coverage
+    taxonomy_classification: Logic Coverage Metric
+    tools:
+      python:
+        primary: Crosshair
+        secondary: Mccabe
+      c:
+        primary: lizard
+        secondary: cyclomatic
+      cpp:
+        primary: Lizard
+        secondary: cyclomatic
+      java:
+        primary: CK
+        secondary: Pmd
+      csharp:
+        primary: lizard
+        secondary: csharp cyclomatic
+      javascript:
+        primary: Lizard
+        secondary: Plato
+      typescript:
+        primary: Lizard
+        secondary: Plato
+    source_row: 9
+  - metric_code: TDI
+    module_key: technical_debt
+    l4_classification: Maintainability Analysis
+    l5_metric: Technical Debt Impact
+    taxonomy_classification: Maintainability Analysis
+    tools:
+      python:
+        primary: Radon/Lizard
+        secondary: Mccabe
+      c:
+        primary: lizard
+        secondary: cyclomatic
+      cpp:
+        primary: Lizard
+        secondary: cyclomatic
+      java:
+        primary: CK
+        secondary: Pmd
+      csharp:
+        primary: lizard
+        secondary: csharp cyclomatic
+      javascript:
+        primary: Lizard
+        secondary: Plato
+      typescript:
+        primary: Lizard
+        secondary: Plato
+    source_row: 10
+  - metric_code: QRA
+    module_key: qa_prioritization
+    l4_classification: Test Prioritization
+    l5_metric: QA Resource Allocation
+    taxonomy_classification: Test Prioritization
+    tools:
+      python:
+        primary: testmon
+        secondary: Mccabe
+      c:
+        primary: lizard
+        secondary: cyclomatic
+      cpp:
+        primary: Lizard
+        secondary: cyclomatic
+      java:
+        primary: CK
+        secondary: Pmd
+      csharp:
+        primary: lizard
+        secondary: csharp cyclomatic
+      javascript:
+        primary: Lizard
+        secondary: Plato
+      typescript:
+        primary: Lizard
+        secondary: Plato
+    source_row: 11
+- technique_code: RM
+  l2: Readability / Maintainability
+  l3: Cognitive Complexity
+  report_group_label: Readability / Maintainability
+  metrics:
+  - metric_code: TDI
+    module_key: technical_debt_impact
+    l4_classification: Maintainability Evaluation
+    l5_metric: Technical Debt Impact
+    taxonomy_classification: Maintainability Evaluation
+    tools:
+      python:
+        primary: cognitive-ast
+        secondary: radon_cc
+      c:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      cpp:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      java:
+        primary: PMD
+        secondary: cognitive calc
+      csharp:
+        primary: clang tidy
+        secondary: simple cognitive
+      javascript:
+        primary: eslint-plugin-sonarjs
+        secondary: sonarjs
+      typescript:
+        primary: sonarjs
+        secondary: complexity report
+    source_row: 12
+  - metric_code: UTC
+    module_key: unit_test_complexity
+    l4_classification: Testability Analysis
+    l5_metric: Unit Test Complexity
+    taxonomy_classification: Testability Analysis
+    tools:
+      python:
+        primary: cognitive-ast
+        secondary: radon_cc
+      c:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      cpp:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      java:
+        primary: PMD
+        secondary: cognitive calc
+      csharp:
+        primary: clang tidy
+        secondary: simple cognitive
+      javascript:
+        primary: eslint-plugin-sonarjs
+        secondary: sonarjs
+      typescript:
+        primary: sonarjs
+        secondary: complexity report
+    source_row: 13
+  - metric_code: DEPR
+    module_key: defect_probability
+    l4_classification: Risk Detection
+    l5_metric: Defect Probability
+    taxonomy_classification: Risk Detection
+    tools:
+      python:
+        primary: cognitive-ast
+        secondary: radon_cc
+      c:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      cpp:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      java:
+        primary: PMD
+        secondary: cognitive calc
+      csharp:
+        primary: clang tidy
+        secondary: simple cognitive
+      javascript:
+        primary: eslint-plugin-sonarjs
+        secondary: sonarjs
+      typescript:
+        primary: sonarjs
+        secondary: complexity report
+    source_row: 14
+  - metric_code: MOOP
+    module_key: modularization_opportunity
+    l4_classification: Refactoring Guidance
+    l5_metric: Modularization Opportunity
+    taxonomy_classification: Refactoring Guidance
+    tools:
+      python:
+        primary: cognitive-ast
+        secondary: radon_cc
+      c:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      cpp:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      java:
+        primary: PMD
+        secondary: cognitive calc
+      csharp:
+        primary: clang tidy
+        secondary: simple cognitive
+      javascript:
+        primary: eslint-plugin-sonarjs
+        secondary: sonarjs
+      typescript:
+        primary: sonarjs
+        secondary: complexity report
+    source_row: 15
+  - metric_code: RFF
+    module_key: reviewer_fatigue_factor
+    l4_classification: Code Review Support
+    l5_metric: Reviewer Fatigue Factor
+    taxonomy_classification: Code Review Support
+    tools:
+      python:
+        primary: cognitive-ast
+        secondary: radon_cc
+      c:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      cpp:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      java:
+        primary: PMD
+        secondary: cognitive calc
+      csharp:
+        primary: clang tidy
+        secondary: simple cognitive
+      javascript:
+        primary: eslint-plugin-sonarjs
+        secondary: sonarjs
+      typescript:
+        primary: sonarjs
+        secondary: complexity report
+    source_row: 16
+  - metric_code: QRA
+    module_key: qa_resource_allocation
+    l4_classification: Testing Effort Prioritization
+    l5_metric: QA Resource Allocation
+    taxonomy_classification: Testing Effort Prioritization
+    tools:
+      python:
+        primary: cognitive-ast
+        secondary: radon_cc
+      c:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      cpp:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      java:
+        primary: PMD
+        secondary: cognitive calc
+      csharp:
+        primary: clang tidy
+        secondary: simple cognitive
+      javascript:
+        primary: eslint-plugin-sonarjs
+        secondary: sonarjs
+      typescript:
+        primary: sonarjs
+        secondary: complexity report
+    source_row: 17
+  - metric_code: HCL
+    module_key: human_cognitive_load
+    l4_classification: Code Understandability Analysis
+    l5_metric: Human Cognitive Load
+    taxonomy_classification: Code Understandability Analysis
+    tools:
+      python:
+        primary: cognitive-ast
+        secondary: radon_cc
+      c:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      cpp:
+        primary: clang-tidy
+        secondary: cognitive-c-parser
+      java:
+        primary: PMD
+        secondary: cognitive calc
+      csharp:
+        primary: clang tidy
+        secondary: simple cognitive
+      javascript:
+        primary: eslint-plugin-sonarjs
+        secondary: sonarjs
+      typescript:
+        primary: sonarjs
+        secondary: complexity report
+    source_row: 18
+- technique_code: CQ
+  l2: Code Quality Auditing
+  l3: Code Duplication
+  report_group_label: Code Quality Auditing
+  metrics:
+  - metric_code: MPFP
+    module_key: multi_point_failure_probability
+    l4_classification: Defect Propagation Risk Detection
+    l5_metric: Multi-Point Failure Probability
+    taxonomy_classification: Defect Propagation Risk Detection
+    tools:
+      python:
+        primary: jscpd
+        secondary: copydetect
+      c:
+        primary: jscpd
+        secondary: copydetect
+      cpp:
+        primary: jscpd
+        secondary: copydetect
+      java:
+        primary: CPD
+        secondary: checkstyle duplicate
+      csharp:
+        primary: jscpd
+        secondary: pmd cpd
+      javascript:
+        primary: jscpd
+        secondary: null
+      typescript:
+        primary: jscpd
+        secondary: jsinspect
+    source_row: 20
+  - metric_code: RELO
+    module_key: redundancy_localization
+    l4_classification: Refactoring Identification
+    l5_metric: Redundancy Localization
+    taxonomy_classification: Refactoring Identification
+    tools:
+      python:
+        primary: jscpd
+        secondary: copydetect
+      c:
+        primary: jscpd
+        secondary: copydetect
+      cpp:
+        primary: jscpd
+        secondary: copydetect
+      java:
+        primary: CPD
+        secondary: checkstyle duplicate
+      csharp:
+        primary: jscpd
+        secondary: pmd cpd
+      javascript:
+        primary: jscpd
+        secondary: null
+      typescript:
+        primary: jscpd
+        secondary: jsinspect
+    source_row: 21
+  - metric_code: SCS
+    module_key: structural_cleanliness_score
+    l4_classification: Code Quality Assessment
+    l5_metric: Structural Cleanliness Score
+    taxonomy_classification: Code Quality Assessment
+    tools:
+      python:
+        primary: jscpd
+        secondary: copydetect
+      c:
+        primary: jscpd
+        secondary: copydetect
+      cpp:
+        primary: jscpd
+        secondary: copydetect
+      java:
+        primary: CPD
+        secondary: checkstyle duplicate
+      csharp:
+        primary: jscpd
+        secondary: pmd cpd
+      javascript:
+        primary: jscpd
+        secondary: null
+      typescript:
+        primary: jscpd
+        secondary: jsinspect
+    source_row: 22
+  - metric_code: TSS
+    module_key: test_suite_streamlining
+    l4_classification: Test Maintenance Reduction
+    l5_metric: Test Suite Streamlining
+    taxonomy_classification: Test Maintenance Reduction
+    tools:
+      python:
+        primary: jscpd
+        secondary: copydetect
+      c:
+        primary: jscpd
+        secondary: copydetect
+      cpp:
+        primary: jscpd
+        secondary: copydetect
+      java:
+        primary: CPD
+        secondary: checkstyle duplicate
+      csharp:
+        primary: jscpd
+        secondary: pmd cpd
+      javascript:
+        primary: jscpd
+        secondary: null
+      typescript:
+        primary: jscpd
+        secondary: jsinspect
+    source_row: 23
+  - metric_code: ABPO
+    module_key: abstraction_potential
+    l4_classification: Refactoring Opportunity Detection
+    l5_metric: Abstraction Potential
+    taxonomy_classification: Refactoring Opportunity Detection
+    tools:
+      python:
+        primary: jscpd
+        secondary: copydetect
+      c:
+        primary: jscpd
+        secondary: copydetect
+      cpp:
+        primary: jscpd
+        secondary: copydetect
+      java:
+        primary: CPD
+        secondary: checkstyle duplicate
+      csharp:
+        primary: jscpd
+        secondary: pmd cpd
+      javascript:
+        primary: jscpd
+        secondary: null
+      typescript:
+        primary: jscpd
+        secondary: jsinspect
+    source_row: 24
+  - metric_code: RFM
+    module_key: regression_focus_mapping
+    l4_classification: Risk-Based Testing Prioritization
+    l5_metric: Regression Focus Mapping
+    taxonomy_classification: Risk-Based Testing Prioritization
+    tools:
+      python:
+        primary: jscpd
+        secondary: copydetect
+      c:
+        primary: jscpd
+        secondary: copydetect
+      cpp:
+        primary: jscpd
+        secondary: copydetect
+      java:
+        primary: CPD
+        secondary: checkstyle duplicate
+      csharp:
+        primary: jscpd
+        secondary: pmd cpd
+      javascript:
+        primary: jscpd
+        secondary: null
+      typescript:
+        primary: jscpd
+        secondary: jsinspect
+    source_row: 25
+  - metric_code: SYVE
+    module_key: synchronization_verification
+    l4_classification: Maintainability Testing
+    l5_metric: Synchronization Verification
+    taxonomy_classification: Maintainability Testing
+    tools:
+      python:
+        primary: jscpd
+        secondary: copydetect
+      c:
+        primary: jscpd
+        secondary: copydetect
+      cpp:
+        primary: jscpd
+        secondary: copydetect
+      java:
+        primary: CPD
+        secondary: checkstyle duplicate
+      csharp:
+        primary: jscpd
+        secondary: pmd cpd
+      javascript:
+        primary: jscpd
+        secondary: null
+      typescript:
+        primary: jscpd
+        secondary: jsinspect
+    source_row: 26
+- technique_code: LR
+  l2: Static Code Analysis
+  l3: Lint / Rule Violations
+  report_group_label: Static Code Analysis
+  metrics:
+  - metric_code: VDK
+    module_key: violation_density_per_kloc
+    l4_classification: Rule Detection Test
+    l5_metric: Violation Density per KLOC
+    taxonomy_classification: Rule Detection Test
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 27
+  - metric_code: RWI
+    module_key: resource_waste_identification
+    l4_classification: Unused Variable Detection
+    l5_metric: Resource Waste Identification
+    taxonomy_classification: Unused Variable Detection
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 28
+  - metric_code: SCS
+    module_key: semantic_consistency_score
+    l4_classification: Naming Convention Validation
+    l5_metric: Semantic Consistency Score
+    taxonomy_classification: Naming Convention Validation
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 29
+  - metric_code: SUS
+    module_key: syntactic_uniformity_score
+    l4_classification: Code Style Rule Validation
+    l5_metric: Syntactic Uniformity Score
+    taxonomy_classification: Code Style Rule Validation
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 30
+  - metric_code: STM
+    module_key: structural_threshold_monitoring
+    l4_classification: Complexity Rule Detection
+    l5_metric: Structural Threshold Monitoring
+    taxonomy_classification: Complexity Rule Detection
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 31
+  - metric_code: IMPR
+    module_key: impact_prioritization
+    l4_classification: Rule Severity Classification
+    l5_metric: Impact Prioritization
+    taxonomy_classification: Rule Severity Classification
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 32
+  - metric_code: ARA
+    module_key: aggregated_risk_assessment
+    l4_classification: Multiple Violations Detection
+    l5_metric: Aggregated Risk Assessment
+    taxonomy_classification: Multiple Violations Detection
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 33
+  - metric_code: ACTU
+    module_key: accuracy_tuning
+    l4_classification: False Positive Prevention
+    l5_metric: Accuracy Tuning
+    taxonomy_classification: False Positive Prevention
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 34
+  - metric_code: PSE
+    module_key: project_specific_enforcement
+    l4_classification: Custom Rule Validation
+    l5_metric: Project-Specific Enforcement
+    taxonomy_classification: Custom Rule Validation
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: N/A
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 35
+  - metric_code: ENST
+    module_key: environment_standardization
+    l4_classification: Configuration File Handling
+    l5_metric: Environment Standardization
+    taxonomy_classification: Configuration File Handling
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 36
+  - metric_code: AUGA
+    module_key: automated_gatekeeping
+    l4_classification: CI/CD Integration Validation
+    l5_metric: Automated Gatekeeping
+    taxonomy_classification: CI/CD Integration Validation
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 37
+  - metric_code: QAT
+    module_key: quality_audit_trail
+    l4_classification: Violation Reporting Validation
+    l5_metric: Quality Audit Trail
+    taxonomy_classification: Violation Reporting Validation
+    tools:
+      python:
+        primary: pylint
+        secondary: flake8
+      c:
+        primary: cppcheck
+        secondary: clang-tidy
+      cpp:
+        primary: cppcheck
+        secondary: clang-tidy
+      java:
+        primary: Checkstyle
+        secondary: pmd
+      csharp:
+        primary: cppcheck
+        secondary: roslyn
+      javascript:
+        primary: eslint
+        secondary: null
+      typescript:
+        primary: biome
+        secondary: eslint
+    source_row: 38
+- technique_code: SX
+  l2: Security White-box Testing
+  l3: Static Vulnerabilities (SAST)
+  report_group_label: Security White-box Testing
+  metrics:
+  - metric_code: BPC
+    module_key: best_practice_compliance
+    l4_classification: Secure Coding Validation
+    l5_metric: Best Practice Compliance
+    taxonomy_classification: Secure Coding Validation
+    tools:
+      python:
+        primary: 'Semgrep OSS
+
+          +
+
+          Bandit'
+        secondary: semgrep
+      c:
+        primary: cppcheck
+        secondary: flawfinder
+      cpp:
+        primary: cppcheck
+        secondary: flawfinder
+      java:
+        primary: spotbugs
+        secondary: pmd sast
+      csharp:
+        primary: cppcheck
+        secondary: roslyn sast
+      javascript:
+        primary: eslint-plugin-security
+        secondary: security-eslint
+      typescript:
+        primary: security eslint
+        secondary: snyk
+    source_row: 40
+  - metric_code: EPS
+    module_key: entry_point_sanitization
+    l4_classification: Input Validation Testing
+    l5_metric: Entry Point Sanitization
+    taxonomy_classification: Input Validation Testing
+    tools:
+      python:
+        primary: 'Semgrep OSS
+
+          +
+
+          Bandit'
+        secondary: bandit
+      c:
+        primary: cppcheck
+        secondary: flawfinder
+      cpp:
+        primary: cppcheck
+        secondary: flawfinder
+      java:
+        primary: spotbugs
+        secondary: pmd sast
+      csharp:
+        primary: cppcheck
+        secondary: roslyn sast
+      javascript:
+        primary: eslint-plugin-security
+        secondary: N/A
+      typescript:
+        primary: security eslint
+        secondary: snyk
+    source_row: 41
+  - metric_code: SIT
+    module_key: sensitive_information_tracking
+    l4_classification: Data Flow Security Analysis
+    l5_metric: Sensitive Information Tracking
+    taxonomy_classification: Data Flow Security Analysis
+    tools:
+      python:
+        primary: 'Semgrep OSS
+
+          +
+
+          Bandit'
+        secondary: bandit
+      c:
+        primary: cppcheck
+        secondary: flawfinder
+      cpp:
+        primary: cppcheck
+        secondary: flawfinder
+      java:
+        primary: spotbugs
+        secondary: pmd sast
+      csharp:
+        primary: cppcheck
+        secondary: roslyn sast
+      javascript:
+        primary: eslint-plugin-security
+        secondary: N/A
+      typescript:
+        primary: security eslint
+        secondary: snyk
+    source_row: 42
+  - metric_code: ACV
+    module_key: access_control_verification
+    l4_classification: Authentication & Authorization Weakness Detection
+    l5_metric: Access Control Verification
+    taxonomy_classification: Authentication & Authorization Weakness Detection
+    tools:
+      python:
+        primary: 'Semgrep OSS
+
+          +
+
+          Bandit'
+        secondary: bandit
+      c:
+        primary: cppcheck
+        secondary: flawfinder
+      cpp:
+        primary: cppcheck
+        secondary: flawfinder
+      java:
+        primary: spotbugs
+        secondary: pmd sast
+      csharp:
+        primary: cppcheck
+        secondary: roslyn sast
+      javascript:
+        primary: N/A
+        secondary: N/A
+      typescript:
+        primary: security eslint
+        secondary: snyk
+    source_row: 43
+  - metric_code: SCS
+    module_key: supply_chain_security
+    l4_classification: Dependency & Library Vulnerability Detection
+    l5_metric: Supply Chain Security
+    taxonomy_classification: Dependency & Library Vulnerability Detection
+    tools:
+      python:
+        primary: 'Semgrep OSS
+
+          +
+
+          Bandit'
+        secondary: semgrep
+      c:
+        primary: cppcheck
+        secondary: flawfinder
+      cpp:
+        primary: cppcheck
+        secondary: flawfinder
+      java:
+        primary: spotbugs
+        secondary: pmd sast
+      csharp:
+        primary: cppcheck
+        secondary: roslyn sast
+      javascript:
+        primary: N/A
+        secondary: N/A
+      typescript:
+        primary: security eslint
+        secondary: snyk
+    source_row: 44
+  - metric_code: REAL
+    module_key: regulatory_alignment
+    l4_classification: Compliance & Security Standard Validation
+    l5_metric: Regulatory Alignment
+    taxonomy_classification: Compliance & Security Standard Validation
+    tools:
+      python:
+        primary: 'Semgrep OSS
+
+          +
+
+          Bandit'
+        secondary: bandit
+      c:
+        primary: cppcheck
+        secondary: flawfinder
+      cpp:
+        primary: cppcheck
+        secondary: flawfinder
+      java:
+        primary: spotbugs
+        secondary: pmd sast
+      csharp:
+        primary: cppcheck
+        secondary: roslyn sast
+      javascript:
+        primary: eslint-plugin-security
+        secondary: N/A
+      typescript:
+        primary: security eslint
+        secondary: snyk
+    source_row: 45
+  - metric_code: ESI
+    module_key: exploit_surface_identification
+    l4_classification: Security Vulnerability Detection
+    l5_metric: Exploit Surface Identification
+    taxonomy_classification: Security Vulnerability Detection
+    tools:
+      python:
+        primary: 'Semgrep OSS
+
+          +
+
+          Bandit'
+        secondary: bandit
+      c:
+        primary: cppcheck
+        secondary: flawfinder
+      cpp:
+        primary: cppcheck
+        secondary: flawfinder
+      java:
+        primary: spotbugs
+        secondary: pmd sast
+      csharp:
+        primary: cppcheck
+        secondary: roslyn sast
+      javascript:
+        primary: eslint-plugin-security
+        secondary: security-eslint
+      typescript:
+        primary: security eslint
+        secondary: snyk
+    source_row: 46
+- technique_code: DR
+  l2: Security White-box Testing
+  l3: Dependency Risk (SCA)
+  report_group_label: Security White-box Testing
+  metrics:
+  - metric_code: HRM
+    module_key: hidden_relationship_mapping
+    l4_classification: Transitive Dependency Analysis
+    l5_metric: Hidden Relationship Mapping
+    taxonomy_classification: Transitive Dependency Analysis
+    tools:
+      python:
+        primary: pip-audit
+        secondary: safety
+      c:
+        primary: cve-bin-tool
+        secondary: dependency-inventory-audit
+      cpp:
+        primary: cvebin
+        secondary: dependency inventory
+      java:
+        primary: 'OWASP
+
+          Dependency-
+
+          Check
+
+          10.0.4'
+        secondary: N/A
+      csharp:
+        primary: cvebin
+        secondary: dotnet list package
+      javascript:
+        primary: npm ls
+        secondary: null
+      typescript:
+        primary: pnpm audit
+        secondary: npm audit
+    source_row: 47
+  - metric_code: LRV
+    module_key: legal_risk_validation
+    l4_classification: License Compliance Testing
+    l5_metric: Legal Risk Validation
+    taxonomy_classification: License Compliance Testing
+    tools:
+      python:
+        primary: pip-audit
+        secondary: safety
+      c:
+        primary: cve-bin-tool
+        secondary: dependency-inventory-audit
+      cpp:
+        primary: cvebin
+        secondary: dependency inventory
+      java:
+        primary: 'OWASP
+
+          Dependency-
+
+          Check
+
+          10.0.5'
+        secondary: N/A
+      csharp:
+        primary: cvebin
+        secondary: dotnet list package
+      javascript:
+        primary: N/A
+        secondary: null
+      typescript:
+        primary: pnpm audit
+        secondary: npm audit
+    source_row: 48
+  - metric_code: TIV
+    module_key: trust_integrity_verification
+    l4_classification: Supply Chain Security Analysis
+    l5_metric: Trust Integrity Verification
+    taxonomy_classification: Supply Chain Security Analysis
+    tools:
+      python:
+        primary: pip-audit
+        secondary: safety
+      c:
+        primary: cve-bin-tool
+        secondary: dependency-inventory-audit
+      cpp:
+        primary: cvebin
+        secondary: dependency inventory
+      java:
+        primary: 'OWASP
+
+          Dependency-
+
+          Check
+
+          10.0.6'
+        secondary: N/A
+      csharp:
+        primary: cvebin
+        secondary: dotnet list package
+      javascript:
+        primary: npm audit + npm ls
+        secondary: null
+      typescript:
+        primary: pnpm audit
+        secondary: npm audit
+    source_row: 49
+  - metric_code: CVT
+    module_key: community_vitality_tracking
+    l4_classification: Dependency Health Monitoring
+    l5_metric: Community Vitality Tracking
+    taxonomy_classification: Dependency Health Monitoring
+    tools:
+      python:
+        primary: pip-audit
+        secondary: safety
+      c:
+        primary: cve-bin-tool
+        secondary: dependency-inventory-audit
+      cpp:
+        primary: cvebin
+        secondary: dependency inventory
+      java:
+        primary: 'OWASP
+
+          Dependency-
+
+          Check
+
+          10.0.7'
+        secondary: N/A
+      csharp:
+        primary: cvebin
+        secondary: dotnet list package
+      javascript:
+        primary: npm audit + npm ls
+        secondary: null
+      typescript:
+        primary: pnpm audit
+        secondary: npm audit
+    source_row: 50
+  - metric_code: MER
+    module_key: mitigation_effort_ranking
+    l4_classification: Risk Prioritization
+    l5_metric: Mitigation Effort Ranking
+    taxonomy_classification: Risk Prioritization
+    tools:
+      python:
+        primary: pip-audit
+        secondary: safety
+      c:
+        primary: cve-bin-tool
+        secondary: dependency-inventory-audit
+      cpp:
+        primary: cvebin
+        secondary: dependency inventory
+      java:
+        primary: 'OWASP
+
+          Dependency-
+
+          Check
+
+          10.0.8'
+        secondary: N/A
+      csharp:
+        primary: cvebin
+        secondary: dotnet list package
+      javascript:
+        primary: npm audit + npm ls
+        secondary: null
+      typescript:
+        primary: pnpm audit
+        secondary: npm audit
+    source_row: 51
+  - metric_code: RTA
+    module_key: real_time_alerting
+    l4_classification: Continuous Dependency Monitoring
+    l5_metric: Real-Time Alerting
+    taxonomy_classification: Continuous Dependency Monitoring
+    tools:
+      python:
+        primary: pip-audit
+        secondary: safety
+      c:
+        primary: cve-bin-tool
+        secondary: dependency-inventory-audit
+      cpp:
+        primary: cvebin
+        secondary: dependency inventory
+      java:
+        primary: 'OWASP
+
+          Dependency-
+
+          Check
+
+          10.0.9'
+        secondary: N/A
+      csharp:
+        primary: cvebin
+        secondary: dotnet list package
+      javascript:
+        primary: npm audit + npm ls
+        secondary: null
+      typescript:
+        primary: pnpm audit
+        secondary: npm audit
+    source_row: 52
+  - metric_code: KCC
+    module_key: known_cve_count
+    l4_classification: Vulnerability Dependency Detection
+    l5_metric: Known CVE Count
+    taxonomy_classification: Vulnerability Dependency Detection
+    tools:
+      python:
+        primary: pip-audit
+        secondary: safety
+      c:
+        primary: cve-bin-tool
+        secondary: dependency-inventory-audit
+      cpp:
+        primary: cvebin
+        secondary: dependency inventory
+      java:
+        primary: 'OWASP
+
+          Dependency-
+
+          Check
+
+          10.0.10'
+        secondary: N/A
+      csharp:
+        primary: cvebin
+        secondary: dotnet list package
+      javascript:
+        primary: npm audit + npm ls
+        secondary: null
+      typescript:
+        primary: pnpm audit
+        secondary: npm audit
+    source_row: 53
+  - metric_code: VLA
+    module_key: version_lag_assessment
+    l4_classification: Outdated Dependency Detection
+    l5_metric: Version Lag Assessment
+    taxonomy_classification: Outdated Dependency Detection
+    tools:
+      python:
+        primary: pip-audit
+        secondary: safety
+      c:
+        primary: cve-bin-tool
+        secondary: dependency-inventory-audit
+      cpp:
+        primary: cvebin
+        secondary: dependency inventory
+      java:
+        primary: 'OWASP
+
+          Dependency-
+
+          Check
+
+          10.0.11'
+        secondary: N/A
+      csharp:
+        primary: cvebin
+        secondary: dotnet list package
+      javascript:
+        primary: N/A
+        secondary: null
+      typescript:
+        primary: pnpm audit
+        secondary: npm audit
+    source_row: 54
+- technique_code: ST
+  l2: Control Flow Testing
+  l3: Statement Coverage
+  report_group_label: Control Flow Testing
+  metrics:
+  - metric_code: TCG
+    module_key: test_case_granularity
+    l4_classification: Unit Testing Support
+    l5_metric: Test Case Granularity
+    taxonomy_classification: Unit Testing Support
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov
+      c:
+        primary: lcov
+        secondary: gcov-line-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-line-parser
+      java:
+        primary: Spotbugs
+        secondary: cobetura
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 56
+  - metric_code: ULI
+    module_key: unreachable_logic_identification
+    l4_classification: Dead Code Detection
+    l5_metric: Unreachable Logic Identification
+    taxonomy_classification: Dead Code Detection
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov
+      c:
+        primary: lcov
+        secondary: gcov-line-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-line-parser
+      java:
+        primary: Spotbugs
+        secondary: cobetura
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 57
+  - metric_code: CGA
+    module_key: coverage_gap_analysis
+    l4_classification: Test Completeness Evaluation
+    l5_metric: Coverage Gap Analysis
+    taxonomy_classification: Test Completeness Evaluation
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov
+      c:
+        primary: lcov
+        secondary: gcov-line-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-line-parser
+      java:
+        primary: Spotbugs
+        secondary: cobetura
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 58
+  - metric_code: SLC
+    module_key: surface_level_correctness
+    l4_classification: Basic Logic Validation
+    l5_metric: Surface-Level Correctness
+    taxonomy_classification: Basic Logic Validation
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov
+      c:
+        primary: lcov
+        secondary: gcov-line-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-line-parser
+      java:
+        primary: Spotbugs
+        secondary: cobetura
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 59
+  - metric_code: STCO
+    module_key: statement_coverage
+    l4_classification: Code Execution Verification
+    l5_metric: Statement Coverage %
+    taxonomy_classification: Code Execution Verification
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov
+      c:
+        primary: lcov
+        secondary: gcov-line-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-line-parser
+      java:
+        primary: Spotbugs
+        secondary: cobetura
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 60
+- technique_code: BR
+  l2: Control Flow Testing
+  l3: Branch Coverage
+  report_group_label: Control Flow Testing
+  metrics:
+  - metric_code: BAC
+    module_key: boolean_accuracy_check
+    l4_classification: Conditional Logic Testing
+    l5_metric: Boolean Accuracy Check
+    taxonomy_classification: Conditional Logic Testing
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov --cov-branch
+      c:
+        primary: lcov
+        secondary: gcov-branch-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-branch-parser
+      java:
+        primary: Spotbugs
+        secondary: null
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 61
+  - metric_code: SIM
+    module_key: sequence_integrity_mapping
+    l4_classification: Control Flow Validation
+    l5_metric: Sequence Integrity Mapping
+    taxonomy_classification: Control Flow Validation
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov --cov-branch
+      c:
+        primary: lcov
+        secondary: gcov-branch-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-branch-parser
+      java:
+        primary: Spotbugs
+        secondary: N/A
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 62
+  - metric_code: IBV
+    module_key: iteration_boundary_verification
+    l4_classification: Loop Condition Testing
+    l5_metric: Iteration Boundary Verification
+    taxonomy_classification: Loop Condition Testing
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov --cov-branch
+      c:
+        primary: lcov
+        secondary: gcov-branch-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-branch-parser
+      java:
+        primary: Spotbugs
+        secondary: N/A
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 63
+  - metric_code: BFI
+    module_key: boundary_failure_identification
+    l4_classification: Edge Case Detection
+    l5_metric: Boundary Failure Identification
+    taxonomy_classification: Edge Case Detection
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov --cov-branch
+      c:
+        primary: lcov
+        secondary: gcov-branch-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-branch-parser
+      java:
+        primary: Spotbugs
+        secondary: N/A
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 64
+  - metric_code: BMD
+    module_key: branch_misdirection_discovery
+    l4_classification: Logic Error Detection
+    l5_metric: Branch Misdirection Discovery
+    taxonomy_classification: Logic Error Detection
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov --cov-branch
+      c:
+        primary: lcov
+        secondary: gcov-branch-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-branch-parser
+      java:
+        primary: Spotbugs
+        secondary: N/A
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 65
+  - metric_code: DCGA
+    module_key: decision_coverage_gap_analysis
+    l4_classification: Test Case Completeness
+    l5_metric: Decision Coverage Gap Analysis
+    taxonomy_classification: Test Case Completeness
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov --cov-branch
+      c:
+        primary: lcov
+        secondary: gcov-branch-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-branch-parser
+      java:
+        primary: Spotbugs
+        secondary: N/A
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 66
+  - metric_code: BRCO
+    module_key: branch_coverage
+    l4_classification: Decision Outcome Verification
+    l5_metric: Branch Coverage %
+    taxonomy_classification: Decision Outcome Verification
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: pytest-cov --cov-branch
+      c:
+        primary: lcov
+        secondary: gcov-branch-parser
+      cpp:
+        primary: coverage
+        secondary: gcov-branch-parser
+      java:
+        primary: Spotbugs
+        secondary: N/A
+      csharp:
+        primary: coverage
+        secondary: coverlet
+      javascript:
+        primary: nyc + mocha
+        secondary: null
+      typescript:
+        primary: vitest + @vitest/coverage-v8
+        secondary: nyc
+    source_row: 67
+- technique_code: PC
+  l2: Control Flow Testing
+  l3: Path Coverage
+  report_group_label: Control Flow Testing
+  metrics:
+  - metric_code: PET
+    module_key: path_execution_tracking
+    l4_classification: Path Execution Tracking
+    l5_metric: Path Execution Tracking
+    taxonomy_classification: Path Execution Tracking
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coverage.py + ast paths
+      c:
+        primary: Path Coverage
+        secondary: cfg-path-analyzer
+      cpp:
+        primary: Path coverage
+        secondary: cfg-path-analyzer
+      java:
+        primary: Jacoco
+        secondary: N/A
+      csharp:
+        primary: path coverage
+        secondary: csharp call paths
+      javascript:
+        primary: nyc v17.1.0
+        secondary: N/A
+      typescript:
+        primary: path
+        secondary: madge
+    source_row: 68
+  - metric_code: FLV
+    module_key: full_logic_validation
+    l4_classification: Complete Coverage Path Verification
+    l5_metric: Full Logic Validation
+    taxonomy_classification: Complete Coverage Path Verification
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coverage.py + ast paths
+      c:
+        primary: Path Coverage
+        secondary: cfg-path-analyzer
+      cpp:
+        primary: Path coverage
+        secondary: cfg-path-analyzer
+      java:
+        primary: Jacoco
+        secondary: N/A
+      csharp:
+        primary: path coverage
+        secondary: csharp call paths
+      javascript:
+        primary: nyc v17.1.1
+        secondary: N/A
+      typescript:
+        primary: path
+        secondary: madge
+    source_row: 69
+  - metric_code: GAID
+    module_key: gap_identification
+    l4_classification: Partial Path Coverage Detection
+    l5_metric: Gap Identification
+    taxonomy_classification: Partial Path Coverage Detection
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coverage.py + ast paths
+      c:
+        primary: Path Coverage
+        secondary: cfg-path-analyzer
+      cpp:
+        primary: Path coverage
+        secondary: cfg-path-analyzer
+      java:
+        primary: Jacoco
+        secondary: N/A
+      csharp:
+        primary: path coverage
+        secondary: csharp call paths
+      javascript:
+        primary: nyc v17.1.2
+        secondary: N/A
+      typescript:
+        primary: path
+        secondary: madge
+    source_row: 70
+  - metric_code: DLP
+    module_key: deep_logic_probing
+    l4_classification: Nested Condition Path Testing
+    l5_metric: Deep Logic Probing
+    taxonomy_classification: Nested Condition Path Testing
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coverage_paths
+      c:
+        primary: Path Coverage
+        secondary: cfg-path-analyzer
+      cpp:
+        primary: Path coverage
+        secondary: cfg-path-analyzer
+      java:
+        primary: Jacoco
+        secondary: N/A
+      csharp:
+        primary: path coverage
+        secondary: csharp call paths
+      javascript:
+        primary: nyc v17.1.3
+        secondary: N/A
+      typescript:
+        primary: path
+        secondary: madge
+    source_row: 71
+  - metric_code: IRA
+    module_key: iterative_route_analysis
+    l4_classification: Loop Path Detection
+    l5_metric: Iterative Route Analysis
+    taxonomy_classification: Loop Path Detection
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coverage_paths
+      c:
+        primary: Path Coverage
+        secondary: cfg-path-analyzer
+      cpp:
+        primary: Path coverage
+        secondary: cfg-path-analyzer
+      java:
+        primary: Jacoco
+        secondary: N/A
+      csharp:
+        primary: path coverage
+        secondary: csharp call paths
+      javascript:
+        primary: N/A
+        secondary: N/A
+      typescript:
+        primary: path
+        secondary: madge
+    source_row: 72
+  - metric_code: GCD
+    module_key: ghost_code_discovery
+    l4_classification: Unreachable Path Detection
+    l5_metric: Ghost Code Discovery
+    taxonomy_classification: Unreachable Path Detection
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coverage_paths
+      c:
+        primary: Path Coverage
+        secondary: cfg-path-analyzer
+      cpp:
+        primary: Path coverage
+        secondary: cfg-path-analyzer
+      java:
+        primary: Jacoco
+        secondary: N/A
+      csharp:
+        primary: path coverage
+        secondary: csharp call paths
+      javascript:
+        primary: N/A
+        secondary: N/A
+      typescript:
+        primary: path
+        secondary: madge
+    source_row: 73
+  - metric_code: EFV
+    module_key: error_flow_verification
+    l4_classification: Exception Path Handling
+    l5_metric: Error Flow Verification
+    taxonomy_classification: Exception Path Handling
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coverage_paths
+      c:
+        primary: Path Coverage
+        secondary: cfg-path-analyzer
+      cpp:
+        primary: Path coverage
+        secondary: cfg-path-analyzer
+      java:
+        primary: Jacoco
+        secondary: N/A
+      csharp:
+        primary: path coverage
+        secondary: csharp call paths
+      javascript:
+        primary: N/A
+        secondary: N/A
+      typescript:
+        primary: path
+        secondary: madge
+    source_row: 74
+  - metric_code: CCM
+    module_key: cross_component_mapping
+    l4_classification: Multi-Function Path Tracking
+    l5_metric: Cross-Component Mapping
+    taxonomy_classification: Multi-Function Path Tracking
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coverage_paths
+      c:
+        primary: Path Coverage
+        secondary: cfg-path-analyzer
+      cpp:
+        primary: Path coverage
+        secondary: cfg-path-analyzer
+      java:
+        primary: Jacoco
+        secondary: N/A
+      csharp:
+        primary: path coverage
+        secondary: csharp call paths
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.0
+        secondary: N/A
+      typescript:
+        primary: path
+        secondary: madge
+    source_row: 75
+  - metric_code: AQE
+    module_key: automated_quality_enforcement
+    l4_classification: CI/CD Integration Test
+    l5_metric: Automated Quality Enforcement
+    taxonomy_classification: CI/CD Integration Test
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coverage_paths
+      c:
+        primary: Path Coverage
+        secondary: cfg-path-analyzer
+      cpp:
+        primary: Path coverage
+        secondary: cfg-path-analyzer
+      java:
+        primary: Jacoco
+        secondary: N/A
+      csharp:
+        primary: path coverage
+        secondary: csharp call paths
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.1
+        secondary: N/A
+      typescript:
+        primary: path
+        secondary: madge
+    source_row: 76
+  - metric_code: PACO
+    module_key: path_coverage
+    l4_classification: Path Detection Testing
+    l5_metric: Path Coverage %
+    taxonomy_classification: Path Detection Testing
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coverage.py + ast paths
+      c:
+        primary: Path Coverage
+        secondary: cfg-path-analyzer
+      cpp:
+        primary: Path coverage
+        secondary: cfg-path-analyzer
+      java:
+        primary: Jacoco
+        secondary: N/A
+      csharp:
+        primary: path coverage
+        secondary: csharp call paths
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.2
+        secondary: js_paths
+      typescript:
+        primary: path
+        secondary: madge
+    source_row: 77
+- technique_code: MU
+  l2: Mutation Testing
+  l3: Mutation Score
+  report_group_label: Mutation Testing
+  metrics:
+  - metric_code: LES
+    module_key: logic_error_sensitivity
+    l4_classification: Fault Detection Capability
+    l5_metric: Logic Error Sensitivity
+    taxonomy_classification: Fault Detection Capability
+    tools:
+      python:
+        primary: cosmic-ray
+        secondary: mutmut
+      c:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      cpp:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      java:
+        primary: PIT
+        secondary: N/A
+      csharp:
+        primary: universalmutator
+        secondary: stryker net
+      javascript:
+        primary: StrykerJS + Mocha
+        secondary: N/A
+      typescript:
+        primary: ts mutation
+        secondary: stryker
+    source_row: 79
+  - metric_code: TRA
+    module_key: test_rigor_assessment
+    l4_classification: Test Coverage Quality Validation
+    l5_metric: Test Rigor Assessment
+    taxonomy_classification: Test Coverage Quality Validation
+    tools:
+      python:
+        primary: cosmic-ray
+        secondary: mutmut
+      c:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      cpp:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      java:
+        primary: PIT
+        secondary: N/A
+      csharp:
+        primary: universalmutator
+        secondary: stryker net
+      javascript:
+        primary: StrykerJS + Mocha
+        secondary: N/A
+      typescript:
+        primary: ts mutation
+        secondary: stryker
+    source_row: 80
+  - metric_code: WSL
+    module_key: weak_spot_localization
+    l4_classification: Test Case Improvement Identification
+    l5_metric: Weak Spot Localization
+    taxonomy_classification: Test Case Improvement Identification
+    tools:
+      python:
+        primary: cosmic-ray
+        secondary: mutmut
+      c:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      cpp:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      java:
+        primary: PIT
+        secondary: N/A
+      csharp:
+        primary: universalmutator
+        secondary: stryker net
+      javascript:
+        primary: StrykerJS + Mocha
+        secondary: N/A
+      typescript:
+        primary: ts mutation
+        secondary: stryker
+    source_row: 81
+  - metric_code: BMA
+    module_key: boundary_mutant_analysis
+    l4_classification: Edge Case Detection
+    l5_metric: Boundary Mutant Analysis
+    taxonomy_classification: Edge Case Detection
+    tools:
+      python:
+        primary: cosmic-ray
+        secondary: mutmut
+      c:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      cpp:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      java:
+        primary: PIT
+        secondary: N/A
+      csharp:
+        primary: universalmutator
+        secondary: stryker net
+      javascript:
+        primary: StrykerJS + Mocha
+        secondary: N/A
+      typescript:
+        primary: ts mutation
+        secondary: stryker
+    source_row: 82
+  - metric_code: CRT
+    module_key: change_resilience_testing
+    l4_classification: Regression Testing Validation
+    l5_metric: Change Resilience Testing
+    taxonomy_classification: Regression Testing Validation
+    tools:
+      python:
+        primary: cosmic-ray
+        secondary: mutmut
+      c:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      cpp:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      java:
+        primary: PIT
+        secondary: N/A
+      csharp:
+        primary: universalmutator
+        secondary: stryker net
+      javascript:
+        primary: StrykerJS + Mocha
+        secondary: N/A
+      typescript:
+        primary: ts mutation
+        secondary: stryker
+    source_row: 83
+  - metric_code: SIC
+    module_key: semantic_integrity_check
+    l4_classification: Code Logic Validation
+    l5_metric: Semantic Integrity Check
+    taxonomy_classification: Code Logic Validation
+    tools:
+      python:
+        primary: cosmic-ray
+        secondary: mutmut
+      c:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      cpp:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      java:
+        primary: PIT
+        secondary: N/A
+      csharp:
+        primary: universalmutator
+        secondary: stryker net
+      javascript:
+        primary: StrykerJS + Mocha
+        secondary: N/A
+      typescript:
+        primary: ts mutation
+        secondary: stryker
+    source_row: 84
+  - metric_code: MKR
+    module_key: mutation_kill_rate
+    l4_classification: Test Suite Effectiveness Evaluation
+    l5_metric: Mutation Kill Rate %
+    taxonomy_classification: Test Suite Effectiveness Evaluation
+    tools:
+      python:
+        primary: cosmic-ray
+        secondary: mutmut
+      c:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      cpp:
+        primary: universalmutator + cmake + ctest
+        secondary: simple-mutation
+      java:
+        primary: PIT
+        secondary: N/A
+      csharp:
+        primary: universalmutator
+        secondary: stryker net
+      javascript:
+        primary: StrykerJS + Mocha
+        secondary: js_mutation
+      typescript:
+        primary: ts mutation
+        secondary: stryker
+    source_row: 85
+- technique_code: CD
+  l2: Test Regression/Coverage Analysis
+  l3: Coverage Delta
+  report_group_label: Test Regression/Coverage Analysis
+  metrics:
+  - metric_code: CODE
+    module_key: coverage_delta
+    l4_classification: Regression Testing Monitoring
+    l5_metric: Coverage Delta %
+    taxonomy_classification: Regression Testing Monitoring
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coveragepy
+      c:
+        primary: git + lcov
+        secondary: coverage-diff-analyzer
+      cpp:
+        primary: coverage delta
+        secondary: coverage-diff-analyzer
+      java:
+        primary: JaCoCo XML + optional baseline XML; OR diff-coverage-maven-plugin
+          / gw-kit delta-coverage (Gradle)
+        secondary: null
+      csharp:
+        primary: coverage_delta
+        secondary: coverlet delta
+      javascript:
+        primary: diff-cover
+        secondary: null
+      typescript:
+        primary: coverage delta
+        secondary: coverage diff
+    source_row: 86
+  - metric_code: DPA
+    module_key: discovery_power_assessment
+    l4_classification: Test Suite Effectiveness Tracking
+    l5_metric: Discovery Power Assessment
+    taxonomy_classification: Test Suite Effectiveness Tracking
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coveragepy
+      c:
+        primary: git + lcov
+        secondary: coverage-diff-analyzer
+      cpp:
+        primary: coverage delta
+        secondary: coverage-diff-analyzer
+      java:
+        primary: JaCoCo + Git + diff-coverage plugin (recommended); JaCoCo alone for
+          whole-project LINE%
+        secondary: null
+      csharp:
+        primary: coverage_delta
+        secondary: coverlet delta
+      javascript:
+        primary: diff-cover
+        secondary: null
+      typescript:
+        primary: coverage delta
+        secondary: coverage diff
+    source_row: 87
+  - metric_code: DRG
+    module_key: deployment_readiness_guard
+    l4_classification: CI/CD Quality Gate Enforcement
+    l5_metric: Deployment Readiness Guard
+    taxonomy_classification: CI/CD Quality Gate Enforcement
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coveragepy
+      c:
+        primary: git + lcov
+        secondary: coverage-diff-analyzer
+      cpp:
+        primary: coverage delta
+        secondary: coverage-diff-analyzer
+      java:
+        primary: JaCoCo (jacoco:check thresholds) + CI comparing XML or Sonar new-code
+          metrics
+        secondary: null
+      csharp:
+        primary: coverage_delta
+        secondary: coverlet delta
+      javascript:
+        primary: diff-cover
+        secondary: null
+      typescript:
+        primary: coverage delta
+        secondary: coverage diff
+    source_row: 88
+  - metric_code: REM
+    module_key: ripple_effect_mapping
+    l4_classification: Change Impact Analysis
+    l5_metric: Ripple Effect Mapping
+    taxonomy_classification: Change Impact Analysis
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coveragepy
+      c:
+        primary: git + lcov
+        secondary: coverage-diff-analyzer
+      cpp:
+        primary: coverage delta
+        secondary: coverage-diff-analyzer
+      java:
+        primary: JaCoCo package counters in jacoco.xml
+        secondary: null
+      csharp:
+        primary: coverage_delta
+        secondary: coverlet delta
+      javascript:
+        primary: diff-cover
+        secondary: null
+      typescript:
+        primary: coverage delta
+        secondary: coverage diff
+    source_row: 89
+  - metric_code: FLP
+    module_key: fresh_logic_proofing
+    l4_classification: New Code Testing Validation
+    l5_metric: Fresh Logic Proofing
+    taxonomy_classification: New Code Testing Validation
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coveragepy
+      c:
+        primary: git + lcov
+        secondary: coverage-diff-analyzer
+      cpp:
+        primary: coverage delta
+        secondary: coverage-diff-analyzer
+      java:
+        primary: Git + JaCoCo line table + diff-coverage / Sonar
+        secondary: null
+      csharp:
+        primary: coverage_delta
+        secondary: coverlet delta
+      javascript:
+        primary: diff-cover
+        secondary: null
+      typescript:
+        primary: coverage delta
+        secondary: coverage diff
+    source_row: 90
+  - metric_code: SHB
+    module_key: structural_health_benchmarking
+    l4_classification: Quality Improvement Measurement
+    l5_metric: Structural Health Benchmarking
+    taxonomy_classification: Quality Improvement Measurement
+    tools:
+      python:
+        primary: Coverage.py
+        secondary: coveragepy
+      c:
+        primary: git + lcov
+        secondary: coverage-diff-analyzer
+      cpp:
+        primary: coverage delta
+        secondary: coverage-diff-analyzer
+      java:
+        primary: JaCoCo jacoco.xml (root + package counters)
+        secondary: null
+      csharp:
+        primary: coverage_delta
+        secondary: coverlet delta
+      javascript:
+        primary: diff-cover
+        secondary: null
+      typescript:
+        primary: coverage delta
+        secondary: coverage diff
+    source_row: 91
+- technique_code: DF
+  l2: Data Flow Testing
+  l3: All Definition Coverage
+  report_group_label: Data Flow Testing
+  metrics:
+  - metric_code: DECO
+    module_key: all_defs_coverage
+    l4_classification: Variable Definition Detection
+    l5_metric: All-Defs Coverage %
+    taxonomy_classification: Variable Definition Detection
+    tools:
+      python:
+        primary: Beniget
+        secondary: pyflakes
+      c:
+        primary: all definition
+        secondary: c-definition-analyzer
+      cpp:
+        primary: all definition
+        secondary: c-definition-analyzer
+      java:
+        primary: Static DU (ASM-DefUse / Spoon / ba-dua) + JaCoCo execution witness
+          — NOT JaCoCo alone
+        secondary: null
+      csharp:
+        primary: all definition
+        secondary: csharp def use
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.0
+        secondary: null
+      typescript:
+        primary: all definition
+        secondary: def cov
+    source_row: 93
+  - metric_code: DPC
+    module_key: data_path_correlation
+    l4_classification: Definition-Use Mapping
+    l5_metric: Data Path Correlation
+    taxonomy_classification: Definition-Use Mapping
+    tools:
+      python:
+        primary: coverage.py
+        secondary: pyflakes
+      c:
+        primary: all definition
+        secondary: c-definition-analyzer
+      cpp:
+        primary: all definition
+        secondary: c-definition-analyzer
+      java:
+        primary: Static DU graph + JaCoCo line/branch (mb,cb) + optional ba-dua
+        secondary: null
+      csharp:
+        primary: all definition
+        secondary: csharp def use
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.1
+        secondary: null
+      typescript:
+        primary: all definition
+        secondary: def cov
+    source_row: 94
+  - metric_code: DPV
+    module_key: du_path_validation
+    l4_classification: Coverage Measurement
+    l5_metric: DU-Path Validation
+    taxonomy_classification: Coverage Measurement
+    tools:
+      python:
+        primary: Beniget
+        secondary: pyflakes
+      c:
+        primary: all definition
+        secondary: c-definition-analyzer
+      cpp:
+        primary: all definition
+        secondary: c-definition-analyzer
+      java:
+        primary: Static DU-path enumeration + JaCoCo
+        secondary: null
+      csharp:
+        primary: all definition
+        secondary: csharp def use
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.2
+        secondary: null
+      typescript:
+        primary: all definition
+        secondary: def cov
+    source_row: 95
+  - metric_code: DDI
+    module_key: dead_data_identification
+    l4_classification: Uncovered Definition Detection
+    l5_metric: Dead Data Identification
+    taxonomy_classification: Uncovered Definition Detection
+    tools:
+      python:
+        primary: pylint
+        secondary: pyflakes
+      c:
+        primary: all definition
+        secondary: c-definition-analyzer
+      cpp:
+        primary: all definition
+        secondary: c-definition-analyzer
+      java:
+        primary: Static DU + JaCoCo ghost lines (mi>0, ci=0)
+        secondary: null
+      csharp:
+        primary: all definition
+        secondary: csharp def use
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.3
+        secondary: null
+      typescript:
+        primary: all definition
+        secondary: def cov
+    source_row: 96
+  - metric_code: NBFA
+    module_key: null_and_boundary_flow_analysis
+    l4_classification: Edge Case Handling
+    l5_metric: Null and Boundary Flow Analysis
+    taxonomy_classification: Edge Case Handling
+    tools:
+      python:
+        primary: CrossHair
+        secondary: pyflakes
+      c:
+        primary: all definition
+        secondary: c-definition-analyzer
+      cpp:
+        primary: all definition
+        secondary: c-definition-analyzer
+      java:
+        primary: JaCoCo branch probes + SpotBugs null patterns (NP_*) + optional Checker/NullAway
+        secondary: null
+      csharp:
+        primary: all definition
+        secondary: csharp def use
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.4
+        secondary: null
+      typescript:
+        primary: all definition
+        secondary: def cov
+    source_row: 97
+  - metric_code: ATV
+    module_key: audit_trail_verification
+    l4_classification: Reporting Validation
+    l5_metric: Audit Trail Verification
+    taxonomy_classification: Reporting Validation
+    tools:
+      python:
+        primary: pydriller
+        secondary: pyflakes
+      c:
+        primary: all definition
+        secondary: c-definition-analyzer
+      cpp:
+        primary: all definition
+        secondary: c-definition-analyzer
+      java:
+        primary: JaCoCo report metadata + CI git SHA + tool versions
+        secondary: null
+      csharp:
+        primary: all definition
+        secondary: csharp def use
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.5
+        secondary: null
+      typescript:
+        primary: all definition
+        secondary: def cov
+    source_row: 98
+- technique_code: DU
+  l2: Data Flow Testing
+  l3: All Uses Coverage
+  report_group_label: Data Flow Testing
+  metrics:
+  - metric_code: DPV
+    module_key: data_processing_validation
+    l4_classification: Computational Use Detection (C-Use)
+    l5_metric: Data Processing Validation
+    taxonomy_classification: Computational Use Detection (C-Use)
+    tools:
+      python:
+        primary: coverage.py + beniget
+        secondary: all_uses
+      c:
+        primary: all uses
+        secondary: c-use-analyzer
+      cpp:
+        primary: all uses
+        secondary: c-use-analyzer
+      java:
+        primary: JaCoCo jacoco.xml (execution) + static DU / ba-dua for true use sets
+        secondary: null
+      csharp:
+        primary: all uses
+        secondary: csharp use coverage
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.6
+        secondary: null
+      typescript:
+        primary: ESLint (eslint-scope) + nyc
+        secondary: null
+    source_row: 99
+  - metric_code: LIA
+    module_key: logic_influence_assessment
+    l4_classification: Predicate Use Detection (P-Use)
+    l5_metric: Logic Influence Assessment
+    taxonomy_classification: Predicate Use Detection (P-Use)
+    tools:
+      python:
+        primary: coverage.py + beniget
+        secondary: all_uses
+      c:
+        primary: all uses
+        secondary: c-use-analyzer
+      cpp:
+        primary: all uses
+        secondary: c-use-analyzer
+      java:
+        primary: JaCoCo BRANCH + line mb/cb
+        secondary: null
+      csharp:
+        primary: all uses
+        secondary: csharp use coverage
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.7
+        secondary: null
+      typescript:
+        primary: ESLint (eslint-scope) + nyc
+        secondary: null
+    source_row: 100
+  - metric_code: PCM
+    module_key: path_correlation_mapping
+    l4_classification: Definition-Use Pair Identification
+    l5_metric: Path Correlation Mapping
+    taxonomy_classification: Definition-Use Pair Identification
+    tools:
+      python:
+        primary: coverage.py + beniget
+        secondary: all_uses
+      c:
+        primary: all uses
+        secondary: c-use-analyzer
+      cpp:
+        primary: all uses
+        secondary: c-use-analyzer
+      java:
+        primary: JaCoCo line + branch probes (CFG path proxy)
+        secondary: null
+      csharp:
+        primary: all uses
+        secondary: csharp use coverage
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.8
+        secondary: null
+      typescript:
+        primary: ESLint (eslint-scope) + nyc
+        secondary: null
+    source_row: 101
+  - metric_code: CDP
+    module_key: comprehensive_data_proofing
+    l4_classification: All-Uses Coverage Verification
+    l5_metric: Comprehensive Data Proofing
+    taxonomy_classification: All-Uses Coverage Verification
+    tools:
+      python:
+        primary: coverage.py + beniget
+        secondary: all_uses
+      c:
+        primary: all uses
+        secondary: c-use-analyzer
+      cpp:
+        primary: all uses
+        secondary: c-use-analyzer
+      java:
+        primary: JaCoCo LINE + BRANCH + INSTRUCTION rollups
+        secondary: null
+      csharp:
+        primary: all uses
+        secondary: csharp use coverage
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.9
+        secondary: null
+      typescript:
+        primary: ESLint (eslint-scope) + nyc
+        secondary: null
+    source_row: 102
+  - metric_code: DFGA
+    module_key: data_flow_gap_analysis
+    l4_classification: Partial Uses Coverage Detection
+    l5_metric: Data Flow Gap Analysis
+    taxonomy_classification: Partial Uses Coverage Detection
+    tools:
+      python:
+        primary: coverage.py + beniget
+        secondary: all_uses
+      c:
+        primary: all uses
+        secondary: c-use-analyzer
+      cpp:
+        primary: all uses
+        secondary: c-use-analyzer
+      java:
+        primary: JaCoCo ghost lines + high-mi partial lines
+        secondary: null
+      csharp:
+        primary: all uses
+        secondary: csharp use coverage
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.10
+        secondary: null
+      typescript:
+        primary: ESLint (eslint-scope) + nyc
+        secondary: null
+    source_row: 103
+  - metric_code: AMRE
+    module_key: ambiguity_resolution
+    l4_classification: Multiple Definitions Handling
+    l5_metric: Ambiguity Resolution
+    taxonomy_classification: Multiple Definitions Handling
+    tools:
+      python:
+        primary: coverage.py + beniget
+        secondary: all_uses
+      c:
+        primary: all uses
+        secondary: c-use-analyzer
+      cpp:
+        primary: all uses
+        secondary: c-use-analyzer
+      java:
+        primary: JaCoCo branch probes mb/cb
+        secondary: null
+      csharp:
+        primary: all uses
+        secondary: csharp use coverage
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.11
+        secondary: null
+      typescript:
+        primary: ESLint (eslint-scope) + nyc
+        secondary: null
+    source_row: 104
+  - metric_code: IPT
+    module_key: inter_procedural_tracking
+    l4_classification: Cross-Function Use Detection
+    l5_metric: Inter-procedural Tracking
+    taxonomy_classification: Cross-Function Use Detection
+    tools:
+      python:
+        primary: coverage.py + beniget
+        secondary: all_uses
+      c:
+        primary: all uses
+        secondary: N/A
+      cpp:
+        primary: all uses
+        secondary: N/A
+      java:
+        primary: JaCoCo method/class LINE counters + call-stack tests (manual/IT)
+        secondary: null
+      csharp:
+        primary: all uses
+        secondary: csharp use coverage
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.12
+        secondary: null
+      typescript:
+        primary: ESLint (eslint-scope) + nyc
+        secondary: null
+    source_row: 105
+  - metric_code: GHID
+    module_key: ghost_use_identification
+    l4_classification: Unreachable Use Detection
+    l5_metric: Ghost Use Identification
+    taxonomy_classification: Unreachable Use Detection
+    tools:
+      python:
+        primary: coverage.py + beniget
+        secondary: all_uses
+      c:
+        primary: all uses
+        secondary: N/A
+      cpp:
+        primary: all uses
+        secondary: N/A
+      java:
+        primary: JaCoCo ghost lines (mi>0, ci=0) + static use map
+        secondary: null
+      csharp:
+        primary: all uses
+        secondary: csharp use coverage
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.13
+        secondary: null
+      typescript:
+        primary: ESLint (eslint-scope) + nyc
+        secondary: null
+    source_row: 106
+  - metric_code: DIA
+    module_key: data_integrity_audit
+    l4_classification: Coverage Reporting Validation
+    l5_metric: Data Integrity Audit
+    taxonomy_classification: Coverage Reporting Validation
+    tools:
+      python:
+        primary: coverage.py + beniget
+        secondary: all_uses
+      c:
+        primary: all uses
+        secondary: c-use-analyzer
+      cpp:
+        primary: all uses
+        secondary: c-use-analyzer
+      java:
+        primary: JaCoCo sessioninfo + report metadata + CI SHA (external)
+        secondary: null
+      csharp:
+        primary: all uses
+        secondary: csharp use coverage
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.14
+        secondary: null
+      typescript:
+        primary: ESLint (eslint-scope) + nyc
+        secondary: null
+    source_row: 107
+  - metric_code: COVER
+    module_key: all_uses_coverage
+    l4_classification: Variable Use Detection
+    l5_metric: All-Uses Coverage %
+    taxonomy_classification: Variable Use Detection
+    tools:
+      python:
+        primary: coverage.py + beniget
+        secondary: all_uses
+      c:
+        primary: all uses
+        secondary: c-use-analyzer
+      cpp:
+        primary: all uses
+        secondary: c-use-analyzer
+      java:
+        primary: Static DU / ba-dua (|U|) + JaCoCo execution witness
+        secondary: null
+      csharp:
+        primary: all uses
+        secondary: csharp use coverage
+      javascript:
+        primary: ESLint (eslint-scope) + nyc v17.1.15
+        secondary: null
+      typescript:
+        primary: ESLint (eslint-scope) + nyc
+        secondary: null
+    source_row: 108
+- technique_code: DP
+  l2: Development Process Analysis
+  l3: Code Churn
+  report_group_label: Development Process Analysis
+  metrics:
+  - metric_code: CCS
+    module_key: code_churn_score
+    l4_classification: Risk-Based Testing Prioritization
+    l5_metric: Code Churn Score
+    taxonomy_classification: Risk-Based Testing Prioritization
+    tools:
+      python:
+        primary: pydriller
+        secondary: git_churn
+      c:
+        primary: pydriller
+        secondary: git-churn
+      cpp:
+        primary: pydriller
+        secondary: git-churn
+      java:
+        primary: Git (log, numstat) + documented composite proxy
+        secondary: null
+      csharp:
+        primary: pydriller
+        secondary: git log churn
+      javascript:
+        primary: pydriller
+        secondary: null
+      typescript:
+        primary: pydriller
+        secondary: null
+    source_row: 110
+  - metric_code: IDV
+    module_key: impact_driven_verification
+    l4_classification: Regression Testing Focus
+    l5_metric: Impact-Driven Verification
+    taxonomy_classification: Regression Testing Focus
+    tools:
+      python:
+        primary: pydriller
+        secondary: git_churn
+      c:
+        primary: pydriller
+        secondary: git-churn
+      cpp:
+        primary: pydriller
+        secondary: git-churn
+      java:
+        primary: Git + JaCoCo jacoco.xml (optional) + diff-coverage (recommended)
+        secondary: null
+      csharp:
+        primary: pydriller
+        secondary: git log churn
+      javascript:
+        primary: pydriller
+        secondary: null
+      typescript:
+        primary: pydriller
+        secondary: null
+    source_row: 111
+  - metric_code: FPM
+    module_key: fault_probability_modeling
+    l4_classification: Defect Prediction
+    l5_metric: Fault Probability Modeling
+    taxonomy_classification: Defect Prediction
+    tools:
+      python:
+        primary: pydriller
+        secondary: git_churn
+      c:
+        primary: pydriller
+        secondary: git-churn
+      cpp:
+        primary: pydriller
+        secondary: git-churn
+      java:
+        primary: Git history density + optional defect linkage (external)
+        secondary: null
+      csharp:
+        primary: pydriller
+        secondary: git log churn
+      javascript:
+        primary: pydriller
+        secondary: null
+      typescript:
+        primary: pydriller
+        secondary: null
+    source_row: 112
+  - metric_code: VSU
+    module_key: validation_suite_updates
+    l4_classification: Test Case Maintenance Identification
+    l5_metric: Validation Suite Updates
+    taxonomy_classification: Test Case Maintenance Identification
+    tools:
+      python:
+        primary: pydriller
+        secondary: git_churn
+      c:
+        primary: pydriller
+        secondary: git-churn
+      cpp:
+        primary: pydriller
+        secondary: git-churn
+      java:
+        primary: Git path analysis (test vs main)
+        secondary: null
+      csharp:
+        primary: pydriller
+        secondary: git log churn
+      javascript:
+        primary: pydriller
+        secondary: null
+      typescript:
+        primary: pydriller
+        secondary: null
+    source_row: 113
+  - metric_code: SEM
+    module_key: side_effect_mapping
+    l4_classification: Change Impact Analysis
+    l5_metric: Side Effect Mapping
+    taxonomy_classification: Change Impact Analysis
+    tools:
+      python:
+        primary: pydriller
+        secondary: git_churn
+      c:
+        primary: pydriller
+        secondary: git-churn
+      cpp:
+        primary: pydriller
+        secondary: git-churn
+      java:
+        primary: Git hotspots + architecture/import tools (manual)
+        secondary: null
+      csharp:
+        primary: pydriller
+        secondary: git log churn
+      javascript:
+        primary: pydriller
+        secondary: null
+      typescript:
+        primary: pydriller
+        secondary: null
+    source_row: 114

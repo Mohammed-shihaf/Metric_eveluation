@@ -1470,7 +1470,7 @@ def generate_all_branches(metrics="all", version="2.6", language="python", build
     return names
 
 
-_GIT_KEEP = {".git", "build", "lib", "notebooks", "tools", "archive", ".gitignore", ".env.local"}
+_GIT_KEEP = {".git", "build", "lib", "notebooks", "tools", "archive", "runs", ".gitignore", ".env.local"}
 
 
 def _git_run(cmd, cwd):

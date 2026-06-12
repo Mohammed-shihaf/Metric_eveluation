@@ -1,41 +1,49 @@
 # Metric Evaluation
 
-SA metric branches for Structural Analysis taxonomy validation on Testable QA.
+Registry-driven branch factory for Testable QA whitebox taxonomy validation.
 
-## Metrics (6 × 4 fixed branch types = 24 branches)
+## Scope
 
-| Abbrev | Classification |
-|--------|----------------|
-| EPI | Static Analysis Metric |
-| DOV | Decision Coverage |
-| LSV | Condition Coverage |
-| TLCC | Logic Coverage Metric |
-| TDI | Maintainability Analysis |
-| QRA | Test Prioritization |
+- **103 metrics** across **14 technique groups** (from `Book.xlsx` → `config/metrics_registry.yaml`)
+- **4 branch types** per metric: `Bug`, `BugFX`, `TCC`, `CC`
+- Naming: `<TECH>_<METRIC>_<TYPE>_<VERSION>` (e.g. `SA_DOV_Bug_2.6`, `RM_UTC_Bug_2.6`)
+- Full matrix: **412 branches** per language/version (configurable via filters)
 
-**Fixed branch types** (always generated and executed together per metric):
+### Implemented today
 
-- **Bug** — intentional defects in the target metric module (expect FAIL on target classification)
-- **BugFX** — defects fixed (expect PASS/WARN on target)
-- **TCC** — tool-optimized clean code with tool configs
-- **CC** — general clean code (table/lookup style, distinct from TCC)
-
-Branch naming: `SA_<METRIC>_<TYPE>_<version>` (e.g. `SA_DOV_Bug_2.6`).
+| Area | Status |
+|------|--------|
+| Registry from `Book.xlsx` | ✅ `config/metrics_registry.yaml` (103 metrics) |
+| Python generation — **SA** | ✅ Full (`lib/sa_generator.py`, regression-safe) |
+| Python generation — **other techniques** | ✅ Generic (`lib/python_generator.py`) |
+| Other languages (Java, C#, JS, …) | ⏳ `NotImplementedError` until templates added |
+| Validation | ✅ `validate_branch.py` / `lib/validate.py` |
+| QA batch + verify | ✅ `lib/sa_qa.py` + notebooks |
 
 ## Repository layout
 
 ```
+config/metrics_registry.yaml   # single source of truth (L2/L3/L4/L5, tools, codes)
+docs/METRICS_REGISTRY_SUMMARY.md
 lib/
-  sa_metrics.py      # metric registry, branch naming, report paths
-  sa_generator.py    # branch codebase generation + optional git deploy
-  sa_validate.py     # type-specific assert validators (Bug/BugFX/TCC/CC)
-  sa_qa.py           # Testable QA batch runner + HTML verification
+  build_registry.py            # regenerate YAML from Book.xlsx
+  registry.py                  # load/filter registry
+  metrics.py                   # branch naming, report paths
+  generator.py                 # routes SA → sa_generator, else python_generator
+  sa_generator.py              # SA reference implementation (Python)
+  python_generator.py          # generic Python for non-SA techniques
+  validate.py                  # registry-driven asserts
+  sa_qa.py                     # Testable QA batch runner + HTML verify
+  qa_reports.py                # save/commit reports on main
 notebooks/
-  01_generate_and_validate.ipynb   # generate build/ + validate all 24 branches
-  02_run_qa_and_verify.ipynb       # run on QA + verify taxonomy HTML
-tools/
-  export_taxonomy_html.ts          # HTML export (run from ai-testable-platform frontend)
-archive/                           # superseded CLI scripts (kept for reference)
+  generate_branches.ipynb      # Notebook 1 — generate + validate (+ optional git)
+  run_whitebox_and_collect_reports.ipynb  # Notebook 2 — QA + reports on main
+  01_generate_and_validate.ipynb           # legacy SA-only notebook
+  02_run_qa_and_verify.ipynb               # legacy QA notebook
+generate_branches.py           # CLI: generate + validate
+validate_branch.py             # CLI: validate only
+tools/export_taxonomy_html.ts
+archive/                       # superseded scripts
 ```
 
 ## How to run
@@ -43,42 +51,44 @@ archive/                           # superseded CLI scripts (kept for reference)
 ### Setup
 
 ```powershell
-cd D:\Metric_evaluation
 py -3 -m pip install -r requirements.txt
 copy .env.example .env.local
-# Edit .env.local with QA credentials and BRANCHES list
+# Regenerate registry when Book.xlsx changes:
+py -3 lib/build_registry.py C:\Users\moham\Downloads\Book.xlsx
 ```
 
-### Notebook 1 — Generate and validate
+### Notebook 1 — Generate branches
 
-Open `notebooks/01_generate_and_validate.ipynb` and run all cells.
+Open `notebooks/generate_branches.ipynb`. Set:
 
-This writes codebases under `build/SA_<METRIC>_<TYPE>_2.6/` and runs assert validators for all four branch types. Set `CREATE_GIT=True` (and optionally `PUSH_GIT=True`) in the parameters cell to create git branches from validated `build/` output.
+- `LANGUAGE`, `VERSION`
+- `TECHNIQUES` (`"SA"`, `"all"`, or `"SA,RM"`)
+- `METRICS` (`"DOV"`, `"all"`, …)
+- `DO_GIT` / `DO_PUSH` (optional)
 
-### Notebook 2 — Run QA and verify
+Writes `build/<TECH>_<METRIC>_<TYPE>_<VERSION>/` and `build_manifest.json`.
 
-Open `notebooks/02_run_qa_and_verify.ipynb` and run all cells.
+CLI equivalent:
 
-This runs whitebox on Testable QA for the selected metrics, exports taxonomy HTML, and verifies that each branch's target classification behaves as expected (Bug → FAIL on target; fixed/clean branches → not FAIL).
+```powershell
+py -3 generate_branches.py --techniques SA --metrics all --language python --version 2.6
+py -3 validate_branch.py --techniques SA --metrics all
+```
 
-Reports accumulate under:
+### Notebook 2 — QA + taxonomy reports
+
+Open `notebooks/run_whitebox_and_collect_reports.ipynb`. Uses `.env.local` credentials.
+
+Reports saved on **main** as:
 
 ```
-taxonomy_reports/Structural Analysis/<branch>_<UTC timestamp>/taxonomy-gate-*.html
+taxonomy_reports/<L2 group>/<BRANCH_NAME>/<BRANCH_NAME>_<YYYYMMDD_HHMMSS>.html
 ```
 
-HTML export uses `tools/export_taxonomy_html.ts` from the ai-testable-platform `web-console` directory (`npx tsx`).
+### SA regression (24 branches)
 
-### Environment
+```powershell
+py -3 generate_branches.py --techniques SA --metrics all --version 2.6
+```
 
-Copy `.env.example` to `.env.local` (not committed). Key variables:
-
-| Variable | Purpose |
-|----------|---------|
-| `AUTH_EMAIL` / `AUTH_PASSWORD` | QA login |
-| `BRANCHES` | Comma-separated branch names to run |
-| `OUTPUT_DIR` | Report root (default `taxonomy_reports`) |
-| `REPOSITORY_MATCH` | GitHub repo slug for catalog resolution |
-| `REFRESH_BRANCHES` | Sync branch SHAs before runs (set in notebook) |
-
-Legacy CLI scripts live under `archive/` for reference only.
+All 24 existing `SA_*` branches remain valid under the generalized naming parser.
