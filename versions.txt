@@ -1,3 +1,1 @@
-﻿Versions | Metric-level SA branches (Python 2.6)
-SA_<METRIC>_<TYPE>_2.6  — types: Bug, BugFX, TCC, CC
-Metrics: EPI, DOV, LSV, TLCC, TDI, QRA
+SA_TDI_*_2.6
