@@ -61,6 +61,26 @@ def generate_branches(
     return names, errors
 
 
+# Root-level scaffold kept on every metric branch; the previous metric's
+# generated files (everything else) are removed before the new codebase is copied.
+_BRANCH_KEEP = {
+    ".git", "build", "lib", "notebooks", "tools", "archive", "runs",
+    "config", "docs", ".gitignore", ".env.local", "taxonomy_reports",
+}
+
+
+def _checked_out_branches(root):
+    """Branch names currently checked out in any worktree (cannot be re-checked-out)."""
+    import subprocess
+    out = subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=root)
+    branches = set()
+    for line in out.decode("utf-8", "replace").splitlines():
+        if line.startswith("branch "):
+            ref = line.split(" ", 1)[1].strip()
+            branches.add(ref.replace("refs/heads/", ""))
+    return branches
+
+
 def create_git_branches(
     techniques="all",
     metrics="all",
@@ -69,41 +89,74 @@ def create_git_branches(
     language="python",
     repo_root=None,
     build_dir="build",
+    base="main",
+    progress_callback=None,
 ):
-    from lib.sa_generator import create_git_branches as _create
-    # generalized: loop all branch names
-    names = []
-    for tech, metric, bt, bname in iter_branches(techniques, metrics, types, version):
-        names.append(bname)
-    root = repo_root or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    import subprocess
+    """Create/refresh git branches from validated build/ output.
+
+    Uses an isolated git worktree per branch so the live working directory
+    (and any running app) is never checked out, wiped, or committed into.
+    Returns (created_branches, errors).
+    """
     import shutil
-    keep = {".git", "build", "lib", "notebooks", "tools", "archive", "runs", "config", "docs",
-            ".gitignore", ".env.local", "taxonomy_reports"}
-    for bname in names:
-        subprocess.check_call(["git", "checkout", "-B", bname, "main"], cwd=root)
-        for name in os.listdir(root):
-            if name in keep:
+    import subprocess
+    import tempfile
+
+    root = repo_root or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    names = [bname for _, _, _, bname in iter_branches(techniques, metrics, types, version)]
+    total = len(names)
+
+    live = _checked_out_branches(root)
+    created = []
+    errors = []
+    wt_root = tempfile.mkdtemp(prefix="metric_wt_")
+    try:
+        for idx, bname in enumerate(names, start=1):
+            if progress_callback:
+                progress_callback("git", idx - 1, total, bname, "worktree")
+            if bname in live:
+                errors.append({"branch": bname, "error": "branch is checked out in another worktree; skipped"})
                 continue
-            path = os.path.join(root, name)
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-            else:
-                os.remove(path)
-        src = os.path.join(root, build_dir, bname)
-        if not os.path.isdir(src):
-            raise RuntimeError("Missing build output: %s" % src)
-        for item in os.listdir(src):
-            s, d = os.path.join(src, item), os.path.join(root, item)
-            if os.path.isdir(s):
-                shutil.copytree(s, d)
-            else:
-                shutil.copy2(s, d)
-        subprocess.check_call(["git", "add", "-A"], cwd=root)
-        subprocess.check_call(
-            ["git", "commit", "-m", "Add %s codebase" % bname], cwd=root)
-    subprocess.check_call(["git", "checkout", "main"], cwd=root)
-    return names
+            src = os.path.join(root, build_dir, bname)
+            if not os.path.isdir(src):
+                errors.append({"branch": bname, "error": "missing build output: %s" % src})
+                continue
+            wt = os.path.join(wt_root, bname.replace("/", "_"))
+            try:
+                subprocess.check_call(["git", "worktree", "add", "--force", "-B", bname, wt, base], cwd=root)
+            except subprocess.CalledProcessError as exc:
+                errors.append({"branch": bname, "error": "worktree add failed: %s" % exc})
+                continue
+            try:
+                for name in os.listdir(wt):
+                    if name in _BRANCH_KEEP:
+                        continue
+                    path = os.path.join(wt, name)
+                    if os.path.isdir(path):
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
+                for item in os.listdir(src):
+                    s, d = os.path.join(src, item), os.path.join(wt, item)
+                    if os.path.isdir(s):
+                        shutil.copytree(s, d)
+                    else:
+                        shutil.copy2(s, d)
+                subprocess.check_call(["git", "add", "-A"], cwd=wt)
+                # commit only when the branch tip would actually change
+                if subprocess.call(["git", "diff", "--cached", "--quiet"], cwd=wt) != 0:
+                    subprocess.check_call(["git", "commit", "-m", "Add %s codebase" % bname], cwd=wt)
+                created.append(bname)
+                if progress_callback:
+                    progress_callback("git", idx, total, bname, "committed")
+            except (subprocess.CalledProcessError, OSError) as exc:
+                errors.append({"branch": bname, "error": str(exc)})
+            finally:
+                subprocess.call(["git", "worktree", "remove", "--force", wt], cwd=root)
+    finally:
+        shutil.rmtree(wt_root, ignore_errors=True)
+        subprocess.call(["git", "worktree", "prune"], cwd=root)
+    return created, errors
 
 
 def push_branches(branch_names, repo_root=None):

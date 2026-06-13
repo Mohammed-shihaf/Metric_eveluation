@@ -142,15 +142,19 @@ def _tab_branches(filters):
                 st.dataframe(assert_rows, use_container_width=True)
 
             if do_git:
-                panel.progress("git", 0, total, "", "creating git branches")
+                panel.progress("git", 0, total, "", "creating git branches (isolated worktree)")
                 to_push = names
                 if push_only_pass and assert_rows:
                     passed = {r["branch_name"] for r in assert_rows if r["overall"] == "PASS"}
                     to_push = [n for n in names if n in passed]
-                create_git_branches(
-                    filters["techniques"], filters["metrics"], filters["types"],
-                    filters["version"], filters["language"], str(ROOT), "build",
-                )
+                with panel.stdout_redirect():
+                    created, git_errors = create_git_branches(
+                        filters["techniques"], filters["metrics"], filters["types"],
+                        filters["version"], filters["language"], str(ROOT), "build",
+                        progress_callback=panel.progress,
+                    )
+                if git_errors:
+                    st.warning("Git branch issues: %d (e.g. %s)" % (len(git_errors), git_errors[0]["error"]))
                 if do_push and to_push:
                     panel.progress("git", 0, len(to_push), "", "pushing to origin")
                     with panel.stdout_redirect():
