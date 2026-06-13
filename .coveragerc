@@ -1,0 +1,10 @@
+[run]
+branch = True
+source = sa
+omit = tests/*
+
+[json]
+output = coverage-py-output/coverage.json
+
+[xml]
+output = coverage-py-output/coverage.xml
