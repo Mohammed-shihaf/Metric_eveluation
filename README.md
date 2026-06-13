@@ -1,3 +1,3 @@
-# SA_Decision-Outcome-Verification_Bug_2.6
+# SA_Decision-Outcome-Verification_BugFX_2.6
 
 Structural Analysis / Decision Outcome Verification
