@@ -25,6 +25,38 @@ def _github_config():
     db = os.environ.get("SCM_DB_PATH", "scm_connections.db")
     db_path = db if os.path.isabs(db) else os.path.join(ROOT, db)
 
+    scm_slug = ""
+    scm_login = ""
+    if os.path.isfile(db_path):
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            """
+            SELECT app_user, provider_username, repo_slug
+            FROM scm_connections
+            WHERE status = 'active'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        conn.close()
+        if row:
+            from lib.scm.store import get_connection
+
+            scm = get_connection(row[0])
+            if scm:
+                scm_slug = (scm.repo_slug or "").strip()
+                scm_login = scm.provider_username or ""
+
+    slug = (scm_slug or repo or "").strip()
+    if token and slug:
+        return {
+            "token": token,
+            "repo_slug": slug,
+            "login": scm_login,
+            "default_branch": "main",
+            "push_method": "pat",
+        }
+
     if os.path.isfile(db_path):
         conn = sqlite3.connect(db_path)
         row = conn.execute(
@@ -49,6 +81,7 @@ def _github_config():
                         "repo_slug": slug,
                         "login": scm.provider_username or "",
                         "default_branch": "main",
+                        "push_method": "oauth",
                     }
 
     if token and repo:
@@ -57,6 +90,7 @@ def _github_config():
             "repo_slug": repo,
             "login": "",
             "default_branch": "main",
+            "push_method": "pat",
         }
     return None
 

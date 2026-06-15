@@ -243,8 +243,7 @@ def app_repo_install_status(token, repo_slug):
         return False, False, "GitHub token is required"
 
     app_slug = _configured_app_slug()
-    is_app_user = _token_kind(token) == "github-app-user"
-    if not is_app_user and not github_oauth_app_mode():
+    if _token_kind(token) != "github-app-user":
         return True, True, "not a GitHub App user token — skip install check"
 
     try:
@@ -296,7 +295,7 @@ def check_app_repo_access(token, repo_slug):
     if not slug:
         return False, False, "Repository must be owner/repo"
 
-    is_app_context = github_oauth_app_mode() or _token_kind(token) == "github-app-user"
+    is_app_context = _token_kind(token) == "github-app-user"
     if is_app_context:
         installed, repo_in_install, install_detail = app_repo_install_status(token, slug)
         if not installed or not repo_in_install:

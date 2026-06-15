@@ -191,6 +191,17 @@ def _ensure_oauth_authorize_url(app_user, login_hint=None):
     return url
 
 
+def _resolved_repo_slug():
+    """Target repo from session, OAuth DB, or REPOSITORY_MATCH."""
+    repo_slug = st.session_state.get("github_repo_slug", "").strip()
+    app_user = _app_user_email()
+    if app_user:
+        conn = _oauth_connection(app_user)
+        if conn:
+            repo_slug = repo_slug or (conn.repo_slug or "").strip()
+    return repo_slug or os.environ.get("REPOSITORY_MATCH", "").strip()
+
+
 def _sync_github_session_from_db():
     """Hydrate Streamlit session from encrypted OAuth connection for current app user."""
     app_user = _app_user_email()
@@ -208,14 +219,6 @@ def _sync_github_session_from_db():
         st.session_state["github_repo_slug"] = repo_slug
         st.session_state["github_repo_url"] = "https://github.com/%s" % repo_slug
         st.session_state.setdefault("github_default_branch", "main")
-        access_ok, needs_install, access_detail = check_app_repo_access(
-            conn.access_token,
-            repo_slug,
-        )
-        st.session_state["github_needs_install"] = needs_install and not access_ok
-        st.session_state["github_access_detail"] = (
-            access_detail if (needs_install and not access_ok) else ""
-        )
     else:
         st.session_state.pop("github_repo_slug", None)
         st.session_state.pop("github_repo_url", None)
@@ -242,30 +245,40 @@ def _github_session():
 
 
 def _github_push_config():
-    """OAuth token from DB for current app user, session, or .env.local PAT fallback."""
+    """Push config: prefer classic PAT from .env.local, else OAuth App token."""
+    repo_slug = _resolved_repo_slug()
+    pat = os.environ.get("GITHUB_TOKEN", "").strip()
+    if pat and repo_slug:
+        return {
+            "token": pat,
+            "repo_slug": repo_slug,
+            "login": st.session_state.get("github_user_login", ""),
+            "default_branch": st.session_state.get("github_default_branch", "main"),
+            "push_method": "pat",
+        }
+
     app_user = _app_user_email()
     if app_user:
         conn = _oauth_connection(app_user)
-        if conn and conn.access_token:
-            repo_slug = (
-                st.session_state.get("github_repo_slug", "").strip()
-                or (conn.repo_slug or "").strip()
-            )
-            if repo_slug:
-                return {
-                    "token": conn.access_token,
-                    "repo_slug": repo_slug,
-                    "login": conn.provider_username or "",
-                    "default_branch": st.session_state.get("github_default_branch", "main"),
-                    "push_method": "oauth",
-                }
+        if conn and conn.access_token and repo_slug:
+            return {
+                "token": conn.access_token,
+                "repo_slug": repo_slug,
+                "login": conn.provider_username or "",
+                "default_branch": st.session_state.get("github_default_branch", "main"),
+                "push_method": "oauth",
+            }
     session = _github_session()
     if session:
         return session
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
-    repo = os.environ.get("REPOSITORY_MATCH", "").strip()
-    if token and repo:
-        return {"token": token, "repo_slug": repo, "login": "", "default_branch": "main"}
+    if pat and os.environ.get("REPOSITORY_MATCH", "").strip():
+        return {
+            "token": pat,
+            "repo_slug": os.environ.get("REPOSITORY_MATCH", "").strip(),
+            "login": "",
+            "default_branch": "main",
+            "push_method": "pat",
+        }
     return None
 
 
@@ -293,6 +306,15 @@ def _recheck_github_access():
         st.session_state["github_needs_install"] = False
         st.session_state.pop("github_access_detail", None)
         return False, "GitHub is not fully configured."
+
+    if cfg.get("push_method") == "pat":
+        access_ok, needs_install, access_detail = check_app_repo_access(
+            cfg["token"],
+            cfg["repo_slug"],
+        )
+        st.session_state["github_needs_install"] = False
+        st.session_state.pop("github_access_detail", None)
+        return access_ok, access_detail
 
     access_ok, needs_install, access_detail = check_app_repo_access(
         cfg["token"],
@@ -841,8 +863,13 @@ def _tab_branches(filters):
     _github_connect_oauth()
 
     github_ready = _github_creds_ready()
-    needs_install = bool(st.session_state.get("github_needs_install"))
+    cfg_push = _github_push_config() if github_ready else None
+    using_pat = bool(cfg_push and cfg_push.get("push_method") == "pat")
+    needs_install = bool(st.session_state.get("github_needs_install")) and not using_pat
     repo_slug = st.session_state.get("github_repo_slug", "")
+
+    if total == 0:
+        st.warning("No branches in scope — adjust the sidebar selection (techniques, metrics, types).")
     if not github_ready:
         if st.session_state.get("github_login_ok") and not st.session_state.get("github_repo_slug"):
             st.warning(
@@ -855,15 +882,19 @@ def _tab_branches(filters):
                 "Step 2: Pick a repository. Then you can generate branches."
             )
     else:
-        cfg = _github_push_config()
+        cfg = cfg_push or _github_push_config()
         login = cfg.get("login") or "configured account"
         repo_slug = cfg.get("repo_slug", "—")
+        push_method = cfg.get("push_method", "oauth")
+        method_label = "classic PAT (.env.local)" if push_method == "pat" else "GitHub App OAuth"
         st.caption(
             "Branches are generated **in memory**, validated in a throwaway temp dir, then pushed "
-            "directly to **%s** via the GitHub API as **%s** — one branch at a time, nothing "
-            "written to build/."
-            % (repo_slug, login)
+            "directly to **%s** via the GitHub API as **%s** using **%s** — one branch at a time, "
+            "nothing written to build/."
+            % (repo_slug, login, method_label)
         )
+        if using_pat:
+            st.info("Push uses **GITHUB_TOKEN** from `.env.local`. OAuth remains for repo discovery only.")
         if needs_install:
             _github_install_prompt(
                 repo_slug,
@@ -897,8 +928,9 @@ def _tab_branches(filters):
         "Generate + validate + push to GitHub",
         type="primary",
         width="stretch",
-        disabled=not github_ready or needs_install,
+        disabled=not github_ready or needs_install or total == 0,
     ):
+        pipeline_toast = ("warning", "Branch pipeline finished with issues")
         with RunPanel("Processing %d branches sequentially" % total) as panel:
             with panel.stdout_redirect():
                 result = process_branches_sequentially(
@@ -928,24 +960,32 @@ def _tab_branches(filters):
             st.dataframe(display_rows, width="stretch")
 
             if result.get("success"):
-                completed = result.get("completed", [])
-                partial_rows = [
-                    r for r in result.get("rows", [])
-                    if r.get("pushed") and r.get("overall") == "PARTIAL"
-                ]
-                st.success(
-                    "All %d branch(es) validated and pushed to GitHub."
-                    % len(completed)
-                )
-                if partial_rows:
-                    st.info(
-                        "%d branch(es) pushed with **PARTIAL** validation (structure + tool support OK; "
-                        "metric tool unavailable). Deep metric-behavior checks run in **Local tools** "
-                        "and **SonarQube** stages."
-                        % len(partial_rows)
+                if result.get("total", 0) == 0:
+                    st.warning("No branches in scope — adjust the sidebar selection.")
+                    pipeline_toast = ("warning", "No branches in scope")
+                else:
+                    completed = result.get("completed", [])
+                    partial_rows = [
+                        r for r in result.get("rows", [])
+                        if r.get("pushed") and r.get("overall") == "PARTIAL"
+                    ]
+                    st.success(
+                        "All %d branch(es) validated and pushed to GitHub."
+                        % len(completed)
                     )
-                st.session_state["last_pushed"] = completed
-                st.session_state.pop("push_status_cache", None)
+                    if partial_rows:
+                        st.info(
+                            "%d branch(es) pushed with **PARTIAL** validation (structure + tool support OK; "
+                            "metric tool unavailable). Deep metric-behavior checks run in **Local tools** "
+                            "and **SonarQube** stages."
+                            % len(partial_rows)
+                        )
+                    st.session_state["last_pushed"] = completed
+                    st.session_state.pop("push_status_cache", None)
+                    pipeline_toast = (
+                        "success",
+                        "Pushed %d branch(es) to GitHub" % len(completed),
+                    )
             elif result.get("stopped_at"):
                 reason = result.get("stop_reason", "validation failed")
                 pushed_rows = [r for r in result.get("rows", []) if r.get("pushed")]
@@ -954,6 +994,7 @@ def _tab_branches(filters):
                     "Stopped at **%s**: %s"
                     % (result["stopped_at"], reason)
                 )
+                pipeline_toast = ("warning", "Stopped at %s" % result["stopped_at"])
                 if pushed_rows:
                     st.warning(
                         "%d earlier branch(es) were pushed before the stop (%d PARTIAL)."
@@ -979,6 +1020,7 @@ def _tab_branches(filters):
             elif result.get("stop_reason"):
                 reason = result.get("stop_reason", "branch pipeline failed")
                 st.error(reason)
+                pipeline_toast = ("warning", "Branch push blocked before generation")
                 if result.get("needs_install"):
                     _github_install_prompt(repo_slug, reason)
                     if st.button("Re-check GitHub access", key="recheck_after_preflight_fail"):
@@ -991,7 +1033,13 @@ def _tab_branches(filters):
                         st.rerun()
             else:
                 st.warning("Branch pipeline finished with no branches completed.")
-        st.toast("Branch pipeline finished", icon="✅")
+                pipeline_toast = ("warning", "No branches completed")
+
+        kind, msg = pipeline_toast
+        if kind == "success":
+            st.toast(msg, icon="✅")
+        else:
+            st.toast(msg, icon="⚠️")
 
     in_scope = filters["summary"]["branches"]
     st.subheader("GitHub push status")
