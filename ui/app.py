@@ -11,7 +11,13 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from lib.branch_pipeline import process_branches_sequentially  # noqa: E402
+from lib.branch_pipeline import (  # noqa: E402
+    generate_branches,
+    pipeline_work_dir,
+    process_branches_sequentially,
+    push_branches,
+    validate_branches,
+)
 from lib.compare import summarize_comparisons  # noqa: E402
 from lib.credentials import audit_credentials  # noqa: E402
 from lib.github_auth import check_app_repo_access, github_app_install_url  # noqa: E402
@@ -245,17 +251,8 @@ def _github_session():
 
 
 def _github_push_config():
-    """Push config: prefer classic PAT from .env.local, else OAuth App token."""
+    """Push config: prefer per-user OAuth; GITHUB_TOKEN is last-resort fallback."""
     repo_slug = _resolved_repo_slug()
-    pat = os.environ.get("GITHUB_TOKEN", "").strip()
-    if pat and repo_slug:
-        return {
-            "token": pat,
-            "repo_slug": repo_slug,
-            "login": st.session_state.get("github_user_login", ""),
-            "default_branch": st.session_state.get("github_default_branch", "main"),
-            "push_method": "pat",
-        }
 
     app_user = _app_user_email()
     if app_user:
@@ -268,6 +265,17 @@ def _github_push_config():
                 "default_branch": st.session_state.get("github_default_branch", "main"),
                 "push_method": "oauth",
             }
+
+    pat = os.environ.get("GITHUB_TOKEN", "").strip()
+    if pat and repo_slug:
+        return {
+            "token": pat,
+            "repo_slug": repo_slug,
+            "login": st.session_state.get("github_user_login", ""),
+            "default_branch": st.session_state.get("github_default_branch", "main"),
+            "push_method": "pat",
+        }
+
     session = _github_session()
     if session:
         return session
@@ -876,13 +884,15 @@ def _tab_branches(filters):
         push_method = cfg.get("push_method", "oauth")
         method_label = "classic PAT (.env.local)" if push_method == "pat" else "GitHub App OAuth"
         st.caption(
-            "Branches are generated **in memory**, validated in a throwaway temp dir, then pushed "
-            "directly to **%s** via the GitHub API as **%s** using **%s** — one branch at a time, "
-            "nothing written to build/."
+            "Three steps: **Generate** (write branches locally) -> **Validate** (registry strength asserts, "
+            "fix-until-pass) -> **Push** to **%s** as **@%s** via **%s**."
             % (repo_slug, login, method_label)
         )
         if using_pat:
-            st.info("Push uses **GITHUB_TOKEN** from `.env.local`. OAuth remains for repo discovery only.")
+            st.info(
+                "Using shared **GITHUB_TOKEN** fallback — connect GitHub OAuth above so pushes go as "
+                "your own account."
+            )
         if needs_install:
             _github_install_prompt(
                 repo_slug,
@@ -912,122 +922,153 @@ def _tab_branches(filters):
         help="Installs the metric's primary tool into this app's Python environment when validation fails.",
     )
 
-    if st.button(
-        "Generate + validate + push to GitHub",
-        type="primary",
-        width="stretch",
-        disabled=not github_ready or needs_install or total == 0,
-    ):
-        pipeline_toast = ("warning", "Branch pipeline finished with issues")
-        with RunPanel("Processing %d branches sequentially" % total) as panel:
+    work_root = pipeline_work_dir(str(ROOT), app_user=_app_user_email())
+    gen_rows = st.session_state.get("gen_rows") or []
+    validate_rows = st.session_state.get("validate_rows") or []
+    all_validated = bool(validate_rows) and bool(st.session_state.get("validate_ok"))
+
+    btn_gen, btn_val, btn_push = st.columns(3)
+    with btn_gen:
+        run_generate = st.button(
+            "1 — Generate branches",
+            type="primary",
+            width="stretch",
+            disabled=total == 0,
+        )
+    with btn_val:
+        run_validate = st.button(
+            "2 — Validate branches",
+            type="primary",
+            width="stretch",
+            disabled=not gen_rows,
+        )
+    with btn_push:
+        run_push = st.button(
+            "3 — Push to GitHub",
+            type="primary",
+            width="stretch",
+            disabled=not all_validated or not github_ready or needs_install,
+        )
+
+    def _assert_table(rows, pushed_col=False):
+        display = []
+        for r in rows:
+            row = {
+                "branch": r.get("branch_name"),
+                "attempts": r.get("attempts"),
+                "structure": r.get("structure"),
+                "tool_support": r.get("tool_support"),
+                "metric_behavior": r.get("metric_behavior"),
+                "strength": r.get("strength_score"),
+                "threshold": (r.get("expected_threshold") or "")[:50],
+                "overall": r.get("overall"),
+                "detail": r.get("failure_reason") or r.get("messages") or r.get("error", ""),
+            }
+            if pushed_col:
+                row["pushed"] = "yes" if r.get("pushed") else "no"
+            display.append(row)
+        if display:
+            st.dataframe(display, width="stretch")
+
+    if run_generate:
+        with RunPanel("Generating %d branches" % total) as panel:
             with panel.stdout_redirect():
-                result = process_branches_sequentially(
+                gen_result = generate_branches(
                     filters["techniques"],
                     filters["metrics"],
                     filters["types"],
                     filters["version"],
                     filters["language"],
-                    str(ROOT),
-                    github_config=_github_push_config(),
+                    work_root,
+                    progress_callback=panel.progress,
+                )
+            st.session_state["gen_rows"] = gen_result.get("rows", [])
+            st.session_state.pop("validate_rows", None)
+            st.session_state.pop("validate_ok", None)
+            st.session_state.pop("last_branch_pipeline", None)
+            if gen_result.get("success"):
+                st.success("Generated %d branch(es) in `%s`." % (len(gen_result.get("generated", [])), work_root))
+                panel.set_result("complete", "complete")
+                st.toast("Generated %d branches" % len(gen_result.get("generated", [])), icon="✅")
+            else:
+                st.error("Generate stopped at **%s**: %s" % (
+                    gen_result.get("stopped_at"), gen_result.get("stop_reason")))
+                panel.set_result("error", "stopped")
+                st.toast("Generate failed", icon="⚠️")
+            _assert_table(gen_result.get("rows", []))
+
+    if run_validate:
+        with RunPanel("Validating %d branches (strength asserts)" % len(gen_rows)) as panel:
+            with panel.stdout_redirect():
+                val_result = validate_branches(
+                    gen_rows,
+                    filters["version"],
+                    filters["language"],
                     max_fix_attempts=int(max_fix_attempts),
                     auto_install=auto_install,
                     progress_callback=panel.progress,
+                    block_strict=True,
                 )
-            st.session_state["last_branch_pipeline"] = result
-            st.session_state["last_asserts"] = result.get("rows", [])
-            display_rows = [{
-                "branch": r["branch_name"],
-                "attempts": r.get("attempts"),
-                "structure": r.get("structure"),
-                "tool_support": r.get("tool_support"),
-                "metric_behavior": r.get("metric_behavior"),
-                "overall": r.get("overall"),
-                "pushed": "yes" if r.get("pushed") else "no",
-                "detail": r.get("failure_reason") or r.get("messages", ""),
-            } for r in result.get("rows", [])]
-            st.dataframe(display_rows, width="stretch")
-
-            if result.get("success"):
-                if result.get("total", 0) == 0:
-                    st.warning("No branches in scope — adjust the sidebar selection.")
-                    pipeline_toast = ("warning", "No branches in scope")
-                else:
-                    completed = result.get("completed", [])
-                    partial_rows = [
-                        r for r in result.get("rows", [])
-                        if r.get("pushed") and r.get("overall") == "PARTIAL"
-                    ]
-                    st.success(
-                        "All %d branch(es) validated and pushed to GitHub."
-                        % len(completed)
-                    )
-                    if partial_rows:
-                        st.info(
-                            "%d branch(es) pushed with **PARTIAL** validation (structure + tool support OK; "
-                            "metric tool unavailable). Deep metric-behavior checks run in **Local tools** "
-                            "and **SonarQube** stages."
-                            % len(partial_rows)
-                        )
-                    st.session_state["last_pushed"] = completed
-                    st.session_state.pop("push_status_cache", None)
-                    pipeline_toast = (
-                        "success",
-                        "Pushed %d branch(es) to GitHub" % len(completed),
-                    )
-            elif result.get("stopped_at"):
-                reason = result.get("stop_reason", "validation failed")
-                pushed_rows = [r for r in result.get("rows", []) if r.get("pushed")]
-                partial_pushed = [r for r in pushed_rows if r.get("overall") == "PARTIAL"]
-                st.error(
-                    "Stopped at **%s**: %s"
-                    % (result["stopped_at"], reason)
+            st.session_state["validate_rows"] = val_result.get("rows", [])
+            st.session_state["validate_ok"] = val_result.get("success", False)
+            st.session_state["last_asserts"] = val_result.get("rows", [])
+            st.session_state["last_branch_pipeline"] = val_result
+            _assert_table(val_result.get("rows", []))
+            if val_result.get("success"):
+                scores = [r.get("strength_score") for r in val_result.get("rows", []) if r.get("strength_score") is not None]
+                avg = sum(scores) / len(scores) if scores else 0
+                st.success(
+                    "All %d branch(es) passed strength validation (avg strength %.1f)."
+                    % (len(val_result.get("validated", [])), avg)
                 )
-                pipeline_toast = ("warning", "Stopped at %s" % result["stopped_at"])
-                if pushed_rows:
-                    st.warning(
-                        "%d earlier branch(es) were pushed before the stop (%d PARTIAL)."
-                        % (len(pushed_rows), len(partial_pushed))
-                    )
-                else:
-                    st.caption("No branches were pushed for the failed branch.")
-                if result.get("needs_install"):
-                    _github_install_prompt(repo_slug, reason)
-                    if st.button("Re-check GitHub access", key="recheck_after_pipeline_stop"):
-                        with st.spinner("Checking GitHub App install and write access…"):
-                            access_ok, access_detail = _recheck_github_access()
-                        if access_ok:
-                            st.success("GitHub App has read/write access — try generating again.")
-                        else:
-                            st.warning(access_detail or "GitHub App still cannot write to this repository.")
-                        st.rerun()
-                elif "Git Data API" in reason or "not accessible" in reason.lower():
-                    st.info(
-                        "Disconnect GitHub on the Branches tab, create a new token with write access, "
-                        "then reconnect before re-running."
-                    )
-            elif result.get("stop_reason"):
-                reason = result.get("stop_reason", "branch pipeline failed")
-                st.error(reason)
-                pipeline_toast = ("warning", "Branch push blocked before generation")
-                if result.get("needs_install"):
-                    _github_install_prompt(repo_slug, reason)
-                    if st.button("Re-check GitHub access", key="recheck_after_preflight_fail"):
-                        with st.spinner("Checking GitHub App install and write access…"):
-                            access_ok, access_detail = _recheck_github_access()
-                        if access_ok:
-                            st.success("GitHub App has read/write access — try generating again.")
-                        else:
-                            st.warning(access_detail or "GitHub App still cannot write to this repository.")
-                        st.rerun()
+                panel.set_result("complete", "complete")
+                st.toast("Validation passed", icon="✅")
             else:
-                st.warning("Branch pipeline finished with no branches completed.")
-                pipeline_toast = ("warning", "No branches completed")
+                st.error("Validation blocked at **%s**: %s" % (
+                    val_result.get("stopped_at"), val_result.get("stop_reason")))
+                panel.set_result("error", "blocked")
+                st.toast("Validation blocked", icon="⚠️")
 
+    if run_push:
+        pipeline_toast = ("warning", "Push finished with issues")
+        with RunPanel("Pushing %d branches to GitHub" % len(validate_rows)) as panel:
+            with panel.stdout_redirect():
+                push_result = push_branches(
+                    validate_rows,
+                    _github_push_config(),
+                    progress_callback=panel.progress,
+                )
+            st.session_state["last_branch_pipeline"] = push_result
+            _assert_table(push_result.get("rows", []), pushed_col=True)
+            if push_result.get("success"):
+                st.success("Pushed %d branch(es) to GitHub." % len(push_result.get("completed", [])))
+                st.session_state["last_pushed"] = push_result.get("completed", [])
+                st.session_state.pop("push_status_cache", None)
+                panel.set_result("complete", "complete")
+                pipeline_toast = ("success", "Pushed %d branch(es)" % len(push_result.get("completed", [])))
+            elif push_result.get("stop_reason"):
+                st.error(push_result.get("stop_reason"))
+                if push_result.get("needs_install"):
+                    _github_install_prompt(repo_slug, push_result.get("stop_reason"))
+                panel.set_result("error", "blocked")
+            elif push_result.get("stopped_at"):
+                st.error("Push stopped at **%s**: %s" % (
+                    push_result["stopped_at"], push_result.get("stop_reason")))
+                panel.set_result("error", "stopped")
+            else:
+                panel.set_result("error", "finished with issues")
         kind, msg = pipeline_toast
         if kind == "success":
             st.toast(msg, icon="✅")
         else:
             st.toast(msg, icon="⚠️")
+
+    if st.session_state.get("gen_rows"):
+        st.subheader("Generated branches")
+        _assert_table(st.session_state["gen_rows"])
+    if st.session_state.get("validate_rows"):
+        st.subheader("Assert validation (strength)")
+        _assert_table(st.session_state["validate_rows"])
 
     in_scope = filters["summary"]["branches"]
     st.subheader("GitHub push status")

@@ -1531,5 +1531,13 @@ def create_git_branches(metrics="all", version="2.6", language="python", repo_ro
 def push_branches(branch_names, repo_root=None):
     import subprocess
     root = repo_root or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    git_env = dict(os.environ)
+    git_env.update({
+        "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "Never",
+        "GIT_ASKPASS": "echo", "SSH_ASKPASS": "echo",
+    })
     for name in branch_names:
-        subprocess.check_call(["git", "push", "-u", "origin", name, "--force"], cwd=root)
+        subprocess.check_call(
+            ["git", "-c", "credential.helper=", "push", "-u", "origin", name, "--force"],
+            cwd=root, env=git_env,
+        )

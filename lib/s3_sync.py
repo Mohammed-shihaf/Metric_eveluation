@@ -55,42 +55,48 @@ def _normalize_prefix(prefix):
 
 
 def find_s3_run_prefix(bucket, search_prefix, branch, commit_sha, run_id, cell_batch_id=None):
-    """Locate S3 key prefix ending at .../<branch>/<commit>/<run_id>/."""
+    """Locate S3 key prefix ending at .../<branch>/<commit>/<run_id>/ (v2 + legacy v1 names)."""
+    from lib.metrics import branch_name_aliases
+
     s3 = _s3_client()
     search_prefix = _normalize_prefix(search_prefix)
-    needles = [
-        "%s/%s/%s/" % (branch, commit_sha, run_id),
-        "%s/%s/" % (branch, commit_sha),
-    ]
+    aliases = branch_name_aliases(branch)
     best = None
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=search_prefix):
         for obj in page.get("Contents", []):
             key = obj["Key"]
-            if branch not in key or commit_sha not in key:
+            if commit_sha not in key:
+                continue
+            if not any(alias in key for alias in aliases):
                 continue
             if cell_batch_id and cell_batch_id not in key:
                 continue
-            for needle in needles:
-                if needle not in key:
-                    continue
-                idx = key.index(needle) + len(needle)
-                prefix = key[:idx]
-                parts = prefix.rstrip("/").split("/")
-                if len(parts) < 5:
-                    continue
-                run_uuid = parts[-1]
-                commit = parts[-2]
-                br = parts[-3]
-                platform_run_uuid = parts[-4]
-                cell_id = parts[-5]
-                if br != branch or commit != commit_sha:
-                    continue
-                if run_id and run_uuid != run_id and needle.endswith("%s/" % run_id):
-                    continue
-                candidate = (prefix, [cell_id, platform_run_uuid, br, commit, run_uuid])
-                if best is None or len(prefix) > len(best[0]):
-                    best = candidate
+            for alias in aliases:
+                needles = [
+                    "%s/%s/%s/" % (alias, commit_sha, run_id),
+                    "%s/%s/" % (alias, commit_sha),
+                ]
+                for needle in needles:
+                    if needle not in key:
+                        continue
+                    idx = key.index(needle) + len(needle)
+                    prefix = key[:idx]
+                    parts = prefix.rstrip("/").split("/")
+                    if len(parts) < 5:
+                        continue
+                    run_uuid = parts[-1]
+                    commit = parts[-2]
+                    br = parts[-3]
+                    platform_run_uuid = parts[-4]
+                    cell_id = parts[-5]
+                    if br != alias or commit != commit_sha:
+                        continue
+                    if run_id and run_uuid != run_id and needle.endswith("%s/" % run_id):
+                        continue
+                    candidate = (prefix, [cell_id, platform_run_uuid, br, commit, run_uuid])
+                    if best is None or len(prefix) > len(best[0]):
+                        best = candidate
     return best
 
 

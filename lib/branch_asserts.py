@@ -56,23 +56,29 @@ def assert_branch_full(branch_path, technique_code=None, metric_code=None, branc
     messages.append("tool_support: %s" % ts_msg)
 
     metric_behavior = "SKIPPED"
+    tr = None
     if run_tool and structure == "PASS":
         tr = tool_assert_branch(branch_path, technique_code, metric_code, branch_type, language)
         actual = str(tr.get("actual_outcome", "")).upper()
+        strength_pass = tr.get("strength_pass", False)
         if tr.get("status") == "SKIPPED":
             metric_behavior = "SKIPPED"
-        elif branch_type == "Bug":
-            metric_behavior = "PASS" if "FAIL" in actual else "FAIL"
-        elif branch_type == "BugFX":
-            metric_behavior = "PASS" if actual.startswith("PASS") or "WARN" in actual else "FAIL"
-        elif branch_type == "TCC":
-            metric_behavior = "PASS" if ("PASS" in actual or "WARN" in actual) else "FAIL"
+        elif strength_pass and tr.get("status") == "PASS":
+            metric_behavior = "PASS"
         else:
-            metric_behavior = "PASS" if ("PASS" in actual or "WARN" in actual) else "FAIL"
+            metric_behavior = "FAIL"
         messages.append(
-            "metric_behavior: tool=%s raw=%s expected_type=%s actual=%s"
-            % (tr.get("tool_used"), tr.get("raw_metric_value"), tr.get("expected_outcome"), tr.get("actual_outcome"))
+            "metric_behavior: tool=%s raw=%s strength=%.1f expected=%s actual=%s"
+            % (
+                tr.get("tool_used"),
+                tr.get("raw_metric_value"),
+                tr.get("strength_score", 0),
+                tr.get("expected_threshold", "")[:40],
+                tr.get("actual_outcome"),
+            )
         )
+        if tr.get("strength_reason"):
+            messages.append("strength: %s" % tr.get("strength_reason"))
 
     overall = "PASS"
     if structure != "PASS" or tool_support != "PASS" or metric_behavior == "FAIL":
@@ -81,7 +87,7 @@ def assert_branch_full(branch_path, technique_code=None, metric_code=None, branc
         overall = "PARTIAL"
 
     _, metric = metric_entry(technique_code, metric_code)
-    return {
+    row = {
         "branch_name": folder,
         "technique_code": technique_code,
         "metric_code": metric_code,
@@ -92,7 +98,11 @@ def assert_branch_full(branch_path, technique_code=None, metric_code=None, branc
         "metric_behavior": metric_behavior,
         "overall": overall,
         "messages": messages,
+        "strength_score": tr.get("strength_score") if tr else None,
+        "expected_threshold": metric.get("expected_threshold", ""),
+        "strength_pass": tr.get("strength_pass") if tr else None,
     }
+    return row
 
 
 def assert_build_batch(techniques="all", metrics="all", types=None, version="2.6",

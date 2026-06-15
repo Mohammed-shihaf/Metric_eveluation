@@ -18,7 +18,7 @@ from lib.tool_assert import (
 )
 
 SCHEMA_VERSION = "1.0"
-VALID_SOURCES = ("s3", "local", "taxonomy")
+VALID_SOURCES = ("s3", "local", "taxonomy", "sonar")
 VALID_STATUSES = ("PASS", "FAIL", "WARN", "SKIPPED", "ERROR")
 
 
@@ -129,10 +129,16 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
     branch_type = result.get("branch_type", "")
     raw = result.get("raw_metric_value", "")
 
+    extra = {}
+    if result.get("log"):
+        extra["tool_log"] = result.get("log")
+    if result.get("status") == "SKIPPED" and result.get("message"):
+        extra["skip_reason"] = result.get("message")
     if result.get("status") == "SKIPPED":
         norm_status = "SKIPPED"
         metric_values = {}
         family = ""
+        raw = raw or result.get("message", "")
     else:
         metric_values = _parse_metric_values_from_raw(raw)
         family = _tool_family_for_metric(technique_code, metric_code)
@@ -149,6 +155,9 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
         parsed = parse_branch_name(branch_name)
         version = parsed["version"] if parsed else "2.6"
 
+    if family:
+        extra["tool_family"] = family
+
     return make_report(
         technique_code=technique_code,
         metric_code=metric_code,
@@ -162,7 +171,7 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
         raw_summary=raw,
         commit_sha=commit_sha,
         run_id=run_id,
-        extra={"tool_family": family} if family else None,
+        extra=extra or None,
     )
 
 
@@ -426,8 +435,8 @@ def from_taxonomy_html(html_path, technique_code, metric_code, branch_name, bran
     )
 
 
-def find_s3_report_path(download_root, branch, commit_sha, run_id):
-    """Locate downloaded S3 bundle directory for a run."""
+def _find_s3_report_path_one(download_root, branch, commit_sha, run_id):
+    """Locate downloaded S3 bundle directory for one branch name variant."""
     root = Path(download_root)
     if not root.is_dir():
         return None
@@ -456,4 +465,15 @@ def find_s3_report_path(download_root, branch, commit_sha, run_id):
             for run_dir in sorted(commit_dir.iterdir(), reverse=True):
                 if run_dir.is_dir() and any(run_dir.iterdir()):
                     return str(run_dir)
+    return None
+
+
+def find_s3_report_path(download_root, branch, commit_sha, run_id):
+    """Locate downloaded S3 bundle directory for a run (tries v2 and legacy v1 names)."""
+    from lib.metrics import branch_name_aliases
+
+    for alias in branch_name_aliases(branch):
+        found = _find_s3_report_path_one(download_root, alias, commit_sha, run_id)
+        if found:
+            return found
     return None

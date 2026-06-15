@@ -106,7 +106,7 @@ def _gen_init(pkg, l2, version):
     ) % {"l2": l2, "version": version}
 
 
-def _case_body(prefix, idx, variant, metric_name, tool, technique_code=None):
+def _case_body(prefix, idx, variant, metric_name, tool, technique_code=None, family=None, strength=0):
     """One realistic ~18-line decision function."""
     if variant == "bug":
         extra = (
@@ -115,11 +115,24 @@ def _case_body(prefix, idx, variant, metric_name, tool, technique_code=None):
         )
         if idx == 1 and technique_code and technique_code.upper() in _TOOL_DEFECT_SNIPPETS:
             extra += _TOOL_DEFECT_SNIPPETS[technique_code.upper()]
+        if family == "complexity" and strength > 0 and idx <= 2 + strength:
+            extra += (
+                "    for outer in range(%d):\n"
+                "        for inner in range(%d):\n"
+                "            if outer %% 2 == 0 and inner %% 3 == 0:\n"
+                "                if retry_count > outer:\n"
+                "                    if priority < inner:\n"
+                "                        return 'complex-%s-%%d' %% idx\n" % prefix
+            ) % (2 + strength, 3 + strength)
+        if family == "coverage" and strength > 0 and idx == 1:
+            extra += "    # defect: partial coverage path\n    if retry_count > 99:\n        return None\n"
     elif variant == "bugfx":
         extra = (
             "    if retry_count > 3 and not enabled:\n"
             "        return 'stable-%s-%%d' %% (state, idx)\n" % prefix
         )
+        if family == "complexity" and strength > 0:
+            extra = "    return 'resolved-%s-%%d' %% (state, idx)\n" % prefix
     elif variant == "tcc":
         extra = (
             "    if not enabled:\n"
@@ -131,6 +144,8 @@ def _case_body(prefix, idx, variant, metric_name, tool, technique_code=None):
             "    if state in lookup:\n"
             "        return lookup[state]\n" % (prefix, prefix)
         )
+        if family == "complexity" and strength > 0:
+            extra = "    return 'simple-%s-%%d' %% (state, idx)\n" % prefix
     return (
         "def %s_case_%d(state, enabled, retry_count, priority):\n"
         '    """Evaluate %s case %d (%s-oriented)."""\n'
@@ -151,25 +166,43 @@ def _case_body(prefix, idx, variant, metric_name, tool, technique_code=None):
     ) % (prefix, idx, metric_name, idx, tool or "tool", idx, prefix, prefix, extra, prefix)
 
 
-def _gen_target_module(metric, variant, n_fn, tool, technique_code=None):
+def _gen_target_module(metric, variant, n_fn, tool, technique_code=None, strength=0):
+    from lib.tool_assert import tool_family
+
     prefix = metric["metric_code"].lower()
+    family = tool_family(tool or "", technique_code or "")
     parts = [
         FUTURE,
         "METRIC_NAME = '%s'\nTOOL_PRIMARY = '%s'\n\n" % (metric["l5_metric"], tool or ""),
     ]
     for i in range(1, n_fn + 1):
-        parts.append(_case_body(prefix, i, variant, metric["l5_metric"], tool or "tool", technique_code))
+        parts.append(
+            _case_body(prefix, i, variant, metric["l5_metric"], tool or "tool", technique_code, family, strength)
+        )
     return "".join(parts)
 
 
-def _churn_meta(metric, variant):
-    if variant != "bug":
-        return {}
+def _churn_meta(metric, variant, technique_code=None, strength=0):
+    """Emit churn metadata when the metric primary maps to churn family."""
+    from lib.tool_assert import CHURN_FAIL_THRESHOLD, tool_family
+
+    primary = (metric.get("tools") or {}).get("python", {}).get("primary", "")
+    tc = (technique_code or "").upper()
+    if tool_family(primary, tc) != "churn":
+        if tc == "DP" and variant == "bug":
+            score = CHURN_FAIL_THRESHOLD + 15.0 + strength * 5.0
+        else:
+            return {}
+    else:
+        if variant == "bug":
+            score = CHURN_FAIL_THRESHOLD + 15.0 + strength * 8.0
+        else:
+            score = max(5.0, CHURN_FAIL_THRESHOLD - 25.0 - strength * 5.0)
     return {
         ".churn_meta.json": json.dumps(
             {
-                "churn_score": 85.0,
-                metric["module_key"]: {"churn_score": 85.0, "commits": 42},
+                "churn_score": score,
+                metric["module_key"]: {"churn_score": score, "commits": 42},
             },
             indent=2,
         )
@@ -265,11 +298,11 @@ def _gen_main(pkg, metric_code, module_key, n_fn):
     }
 
 
-def _gen_tests(pkg, metric, branch_type, n_fn):
+def _gen_tests(pkg, metric, branch_type, n_fn, strength=0):
     files = {"tests/__init__.py": FUTURE}
     prefix = metric["metric_code"].lower()
     mod = metric["module_key"]
-    fn = "%s_case_0" % prefix
+    fn = "%s_case_1" % prefix
     if branch_type == "Bug":
         files["tests/test_%s.py" % mod] = (
             FUTURE + "import unittest\nfrom %s.%s import %s\n\n"
@@ -277,13 +310,16 @@ def _gen_tests(pkg, metric, branch_type, n_fn):
             "    def test_one_case(self):\n"
             "        self.assertTrue(%s('x', True, 1, 3))\n" % (pkg, mod, fn, fn))
         return files
+    test_count = n_fn if branch_type != "Bug" else 1
+    if strength > 0 and branch_type != "Bug":
+        test_count = min(n_fn, 12 + strength * 6)
     lines = [
         FUTURE,
         "import unittest\nfrom %s.%s import %s\n\n" % (pkg, mod, fn),
         "class Test%sFull(unittest.TestCase):\n" % metric["metric_code"],
     ]
-    for i in range(min(n_fn, 16)):
-        fn_i = "%s_case_%d" % (prefix, i)
+    for i in range(1, test_count + 1):
+        fn_i = "%s_case_%d" % (prefix, min(i, n_fn))
         lines.append("    def test_%s(self):\n        self.assertIsNotNone(%s('s%%d' %% %d, True, %d, %d))\n" % (
             fn_i, fn_i, i, i % 3, i % 5))
     lines.append("\n")
@@ -310,7 +346,7 @@ def _tool_configs(branch_type, pkg, primary_tool):
     }
 
 
-def generate_branch_files(technique_code, metric_code, branch_type, version="2.6", language="python"):
+def generate_branch_files(technique_code, metric_code, branch_type, version="2.6", language="python", strength=0):
     if language != "python":
         raise NotImplementedError("language %r not yet implemented for %s" % (language, technique_code))
     from lib.metrics import branch_name as metrics_branch_name
@@ -326,7 +362,10 @@ def generate_branch_files(technique_code, metric_code, branch_type, version="2.6
     files = None
     loc = 0
     while n_fn <= 96:
-        files = _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_fn, tool, branch_type, version, language)
+        files = _assemble_files(
+            tech, metric, technique_code, metric_code, pkg, variant, n_fn, tool,
+            branch_type, version, language, strength=strength,
+        )
         loc = _count_loc(files, pkg)
         if loc >= MIN_LOC:
             break
@@ -336,7 +375,7 @@ def generate_branch_files(technique_code, metric_code, branch_type, version="2.6
     return files
 
 
-def _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_fn, tool, branch_type, version, language):
+def _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_fn, tool, branch_type, version, language, strength=0):
     files = {}
     files["%s/__init__.py" % pkg] = _gen_init(pkg, tech["l2"], version)
     files["%s/config.py" % pkg] = _gen_config(tech, metric, branch_type, version, language, pkg)
@@ -351,7 +390,7 @@ def _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_f
         rel = "%s/%s.py" % (pkg, m["module_key"])
         mtool = (m.get("tools") or {}).get("python", {}).get("primary", "")
         if m["metric_code"] == metric["metric_code"]:
-            files[rel] = _gen_target_module(metric, variant, n_fn, mtool, technique_code)
+            files[rel] = _gen_target_module(metric, variant, n_fn, mtool, technique_code, strength=strength)
         else:
             files[rel] = _gen_stub(m["module_key"], m["l5_metric"], tech["l3"], mtool)
 
@@ -361,20 +400,19 @@ def _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_f
     files["README.md"] = "# %s\n\n%s / %s\n" % (bname, tech["l2"], metric["l5_metric"])
     files["requirements.txt"] = _requirements_extra(technique_code, variant)
     files.update(_tool_configs(branch_type, pkg, tool))
-    if technique_code.upper() == "DP":
-        files.update(_churn_meta(metric, variant))
-    files.update(_gen_tests(pkg, metric, branch_type, n_fn))
+    files.update(_churn_meta(metric, variant, technique_code, strength=strength))
+    files.update(_gen_tests(pkg, metric, branch_type, n_fn, strength=strength))
     for path, content in files.items():
         if path.endswith(".py"):
             _assert_no_forbidden(content, path)
     return files
 
 
-def write_branch(root, technique_code, metric_code, branch_type, version="2.6", language="python"):
+def write_branch(root, technique_code, metric_code, branch_type, version="2.6", language="python", strength=0):
     import shutil
     from lib.metrics import branch_name as metrics_branch_name
 
-    files = generate_branch_files(technique_code, metric_code, branch_type, version, language)
+    files = generate_branch_files(technique_code, metric_code, branch_type, version, language, strength=strength)
     if os.path.isdir(root):
         shutil.rmtree(root)
     os.makedirs(root)

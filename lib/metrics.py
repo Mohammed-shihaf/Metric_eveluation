@@ -84,6 +84,22 @@ def infer_from_branch_name(name, registry=None):
     return parsed["tech"], parsed["metric"], parsed["type"], parsed["version"]
 
 
+def branch_name_aliases(name, registry=None):
+    """Return candidate branch folder names for S3/Git lookups (v2 first, then legacy v1)."""
+    parsed = parse_branch_name(name, registry)
+    if not parsed:
+        return [name]
+    tech = parsed["tech"]
+    metric_code = parsed["metric"]
+    branch_type = parsed["type"]
+    version = parsed["version"]
+    aliases = [name]
+    v1 = "%s_%s_%s_%s" % (tech, metric_code, branch_type, version)
+    if v1 not in aliases:
+        aliases.append(v1)
+    return aliases
+
+
 def github_branch_url(branch_name, repository_match=None):
     repo = (repository_match or os.environ.get("REPOSITORY_MATCH", "")).strip()
     if not repo:

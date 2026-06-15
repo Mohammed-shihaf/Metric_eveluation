@@ -30,15 +30,24 @@ def _which(cmd):
 
 def _python_module_available(module):
     try:
-        subprocess.run(
+        proc = subprocess.run(
             [sys.executable, "-c", "import %s" % module],
             capture_output=True,
             timeout=15,
             check=False,
         )
-        return True
+        return proc.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def _pytest_ready():
+    rc, _, _ = _run(
+        [sys.executable, "-m", "pytest", "--version"],
+        os.path.dirname(os.path.abspath(__file__)),
+        timeout=20,
+    )
+    return rc == 0
 
 
 def _run(cmd, cwd, timeout=TOOL_TIMEOUT_SEC):
@@ -95,6 +104,8 @@ def tool_family(primary, technique_code):
         return "duplication"
     if "testmon" in p:
         return "testmon"
+    if "beniget" in p:
+        return "beniget"
     return "unknown"
 
 
@@ -202,31 +213,111 @@ def _run_coverage_pct(root, include_glob):
     return 0.0 if rc == 0 else None
 
 
+def _truncate_log(text, max_len=4000):
+    text = (text or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "\n... (truncated)"
+
+
 def _runner_coverage(ctx, root):
-    pct = _run_coverage_pct(root, ctx["target_rel"])
-    if pct is None:
-        return None, "coverage unavailable"
+    if not _python_module_available("coverage"):
+        return None, "coverage.py not installed (pip install coverage pytest)"
+    _run([sys.executable, "-m", "coverage", "erase"], root, timeout=30)
+    rc, out, err = _run(
+        [sys.executable, "-m", "coverage", "run", "--branch", "-m", "pytest", "tests/", "-q", "--tb=no"],
+        root,
+        timeout=TOOL_TIMEOUT_SEC,
+    )
+    report_rc, report_out, report_err = _run(
+        [sys.executable, "-m", "coverage", "report", "--include=%s" % ctx["target_rel"]],
+        root,
+        timeout=30,
+    )
+    combined = report_out + report_err
+    run_log = _truncate_log(out + err + combined)
+    m = re.search(r"(\d+)%", combined)
+    if m:
+        pct = float(m.group(1))
+    elif report_rc == 0:
+        pct = 0.0
+    elif "no data" in combined.lower() or "no-data-collected" in (out + err).lower():
+        pct = 0.0
+    else:
+        return None, "coverage report failed"
     violation = _coverage_violation(pct, root)
     n_tests = _count_tests(root)
     return {
         "outcome": _outcome_from_bool(violation),
         "raw_value": "%.1f%% cov tests=%d" % (pct, n_tests),
+        "metric_value": pct,
         "tool_used": "coverage.py",
         "detail": "partial<=2 tests & cov<%.0f%%" % COVERAGE_FAIL_THRESHOLD,
+        "log": run_log,
     }, None
 
 
-def _runner_crosshair_pymcdc(ctx, root, tool_name):
+def _runner_crosshair(ctx, root):
+    target = ctx["target_path"]
+    if not os.path.isfile(target):
+        return None, "target module missing: %s" % ctx["target_rel"]
+    if not _python_module_available("crosshair"):
+        return None, "crosshair not installed (pip install crosshair-tool)"
+    rc, out, err = _run(
+        [sys.executable, "-m", "crosshair", "check", target, "--per_condition_timeout=10"],
+        root,
+        timeout=TOOL_TIMEOUT_SEC,
+    )
+    combined = out + err
+    lowered = combined.lower()
+    if "cannot be analyzed" in lowered or "no checkable" in lowered:
+        return None, "crosshair cannot analyze %s" % ctx["target_rel"]
+    counterexamples = len(re.findall(r"counterexample", combined, re.I))
+    violation = counterexamples > 0 or rc not in (0, 1)
+    return {
+        "outcome": _outcome_from_bool(violation),
+        "raw_value": "counterexamples=%d rc=%d" % (counterexamples, rc),
+        "metric_value": float(counterexamples),
+        "tool_used": "crosshair",
+        "detail": "per_condition_timeout=10s",
+        "log": _truncate_log(combined),
+    }, None
+
+
+def _runner_pymcdc(ctx, root):
+    target = ctx["target_path"]
+    if not os.path.isfile(target):
+        return None, "target module missing: %s" % ctx["target_rel"]
+    if _python_module_available("pymcdc"):
+        rc, out, err = _run(
+            [sys.executable, "-m", "pymcdc", target],
+            root,
+            timeout=TOOL_TIMEOUT_SEC,
+        )
+        combined = out + err
+        violation = rc != 0 or "fail" in combined.lower()
+        return {
+            "outcome": _outcome_from_bool(violation),
+            "raw_value": "rc=%d" % rc,
+            "metric_value": float(rc),
+            "tool_used": "pymcdc",
+            "detail": "MC/DC via pymcdc",
+            "log": _truncate_log(combined),
+        }, None
+    if not _python_module_available("coverage"):
+        return None, "pymcdc and coverage.py unavailable"
     pct = _run_coverage_pct(root, ctx["target_rel"])
     if pct is None:
-        return None, "%s proxy (coverage) unavailable" % tool_name
+        return None, "pymcdc unavailable; branch coverage fallback failed"
     violation = _coverage_violation(pct, root)
     n_tests = _count_tests(root)
     return {
         "outcome": _outcome_from_bool(violation),
-        "raw_value": "%.1f%% cov tests=%d (proxy)" % (pct, n_tests),
-        "tool_used": "%s (coverage proxy)" % tool_name,
-        "detail": "branch-path proxy",
+        "raw_value": "%.1f%% branch_cov tests=%d" % (pct, n_tests),
+        "metric_value": pct,
+        "tool_used": "coverage.py",
+        "detail": "pymcdc unavailable; branch coverage fallback",
+        "log": "pymcdc not installed; used coverage.py --branch",
     }, None
 
 
@@ -256,6 +347,7 @@ def _runner_complexity(ctx, root):
     return {
         "outcome": _outcome_from_bool(violation),
         "raw_value": "max_cc=%d defect_marker=%s" % (max_cc, marked),
+        "metric_value": float(max_cc),
         "tool_used": "radon",
         "detail": "threshold=%d" % COMPLEXITY_FAIL_THRESHOLD,
     }, None
@@ -311,6 +403,7 @@ def _runner_security(ctx, root):
     return {
         "outcome": _outcome_from_bool(violation),
         "raw_value": "findings=%d" % findings,
+        "metric_value": float(findings),
         "tool_used": "+".join(tools_used),
         "detail": "target-only scan",
     }, None
@@ -322,6 +415,7 @@ def _runner_sca(ctx, root):
         return {
             "outcome": "PASS",
             "raw_value": "vulns=0",
+            "metric_value": 0.0,
             "tool_used": "pip-audit",
             "detail": "no requirements.txt",
         }, None
@@ -340,6 +434,7 @@ def _runner_sca(ctx, root):
         return {
             "outcome": _outcome_from_bool(violation),
             "raw_value": "vulns=%d" % n,
+            "metric_value": float(n),
             "tool_used": "pip-audit",
             "detail": "requirements.txt scan",
         }, None
@@ -361,6 +456,7 @@ def _runner_mutation(ctx, root):
     return {
         "outcome": _outcome_from_bool(violation),
         "raw_value": "test_fn_ratio=%.3f" % ratio,
+        "metric_value": ratio,
         "tool_used": tool_used,
         "detail": "threshold=%.2f (proxy until full mutation run)" % MUTATION_RATIO_FAIL,
     }, None
@@ -379,6 +475,7 @@ def _runner_churn(ctx, root):
             return {
                 "outcome": _outcome_from_bool(violation),
                 "raw_value": "churn_score=%.1f" % score,
+                "metric_value": score,
                 "tool_used": "churn_meta",
                 "detail": "threshold=%.0f" % CHURN_FAIL_THRESHOLD,
             }, None
@@ -411,6 +508,7 @@ def _runner_duplication(ctx, root):
         return {
             "outcome": _outcome_from_bool(violation),
             "raw_value": "dup=%.1f%%" % pct,
+            "metric_value": pct,
             "tool_used": "jscpd",
             "detail": "threshold=%.0f%%" % DUP_FAIL_THRESHOLD,
         }, None
@@ -440,8 +538,44 @@ def _runner_lint(ctx, root):
     return {
         "outcome": _outcome_from_bool(violation),
         "raw_value": "issues=%d defect_marker=%s" % (n, marked),
+        "metric_value": float(n),
         "tool_used": tool_used,
         "detail": "target-only",
+    }, None
+
+
+def _runner_beniget(ctx, root):
+    target = ctx["target_path"]
+    if not os.path.isfile(target):
+        return None, "target module missing: %s" % ctx["target_rel"]
+    if not _python_module_available("beniget"):
+        return None, "beniget not installed (pip install beniget)"
+    src = _read(target)
+    dead = 0
+    try:
+        import ast
+
+        import beniget
+
+        tree = ast.parse(src, filename=target)
+        du = beniget.DefUseChains()
+        du.visit(tree)
+        for chain in du.chains.values():
+            try:
+                if chain.definitions() and not chain.users():
+                    dead += 1
+            except (AttributeError, TypeError):
+                continue
+    except Exception as exc:
+        return None, "beniget analysis failed: %s" % exc
+    marked = _has_defect_marker(src)
+    violation = dead > 0 or marked
+    return {
+        "outcome": _outcome_from_bool(violation),
+        "raw_value": "dead_defs=%d defect_marker=%s" % (dead, marked),
+        "metric_value": float(dead),
+        "tool_used": "beniget",
+        "detail": "def-use chain analysis",
     }, None
 
 
@@ -452,6 +586,7 @@ def _runner_testmon(ctx, root):
         return {
             "outcome": "FAIL",
             "raw_value": "tests=%d" % n_tests,
+            "metric_value": float(n_tests),
             "tool_used": "testmon",
             "detail": "insufficient tests",
         }, None
@@ -459,12 +594,14 @@ def _runner_testmon(ctx, root):
         return {
             "outcome": "PASS",
             "raw_value": "tests=%d config=0" % n_tests,
+            "metric_value": float(n_tests),
             "tool_used": "testmon",
             "detail": "default path",
         }, None
     return {
         "outcome": "PASS",
         "raw_value": "tests=%d config=1" % n_tests,
+        "metric_value": float(n_tests),
         "tool_used": "testmon",
         "detail": ".testmondata.ini present",
     }, None
@@ -472,8 +609,8 @@ def _runner_testmon(ctx, root):
 
 RUNNERS = {
     "coverage": _runner_coverage,
-    "crosshair": lambda ctx, root: _runner_crosshair_pymcdc(ctx, root, ctx["primary"] or "Crosshair"),
-    "pymcdc": lambda ctx, root: _runner_crosshair_pymcdc(ctx, root, "Pymcdc"),
+    "crosshair": _runner_crosshair,
+    "pymcdc": _runner_pymcdc,
     "complexity": _runner_complexity,
     "lint": _runner_lint,
     "security": _runner_security,
@@ -482,6 +619,7 @@ RUNNERS = {
     "churn": _runner_churn,
     "duplication": _runner_duplication,
     "testmon": _runner_testmon,
+    "beniget": _runner_beniget,
 }
 
 
@@ -557,6 +695,7 @@ def tool_assert_branch(root, technique_code=None, metric_code=None, branch_type=
             "expected_outcome": expected_outcome_label(branch_type),
             "actual_outcome": "SKIPPED",
             "message": skip_reason or "tool not available",
+            "log": "",
             "technique_code": technique_code,
             "metric_code": metric_code,
             "branch_type": branch_type,
@@ -567,25 +706,51 @@ def tool_assert_branch(root, technique_code=None, metric_code=None, branch_type=
         config_effective = _tcc_config_effective(root, family, ctx["primary"])
 
     isolation_ok, isolation_msg = _check_isolation(ctx, root, family, result["outcome"])
-    matches = _matches_branch_type(branch_type, result["outcome"], config_effective) and isolation_ok
+
+    from lib.metric_strength import score_metric
+    from lib.registry import metric_entry
+
+    _, reg_metric = metric_entry(technique_code, metric_code)
+    strength = score_metric(
+        family,
+        result.get("metric_value"),
+        reg_metric,
+        branch_type,
+        technique_code=technique_code,
+    )
+    strength_pass = strength.get("passed", False)
+
+    matches = (
+        _matches_branch_type(branch_type, result["outcome"], config_effective)
+        and isolation_ok
+        and strength_pass
+    )
 
     actual = result["outcome"]
     if branch_type == "TCC" and not config_effective:
         actual = "%s (config ineffective)" % actual
     if not isolation_ok:
         actual = "%s (isolation FAIL)" % actual
+    if not strength_pass:
+        actual = "%s (strength %.1f)" % (actual, strength.get("score", 0))
 
     return {
         "branch_name": folder,
         "status": "PASS" if matches else "FAIL",
         "tool_used": result.get("tool_used", ctx["primary"]),
         "raw_metric_value": result.get("raw_value", ""),
+        "metric_value": result.get("metric_value"),
         "expected_outcome": expected_outcome_label(branch_type),
         "actual_outcome": actual,
-        "message": isolation_msg or result.get("detail", ""),
+        "message": isolation_msg or result.get("detail", "") or strength.get("reason", ""),
+        "log": result.get("log", ""),
         "technique_code": technique_code,
         "metric_code": metric_code,
         "branch_type": branch_type,
+        "strength_score": strength.get("score", 0),
+        "strength_pass": strength_pass,
+        "expected_threshold": reg_metric.get("expected_threshold", ""),
+        "strength_reason": strength.get("reason", ""),
     }
 
 
@@ -598,6 +763,7 @@ def _skipped_result(folder, message, tool=""):
         "expected_outcome": "",
         "actual_outcome": "SKIPPED",
         "message": message,
+        "log": "",
         "technique_code": "",
         "metric_code": "",
         "branch_type": "",

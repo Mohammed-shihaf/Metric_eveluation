@@ -20,56 +20,72 @@ def _status_compatible(s3_status, local_status):
     return False
 
 
-def _metric_diff(key, s3_val, local_val):
-    if s3_val is None and local_val is None:
+def _metric_diff(key, left_val, right_val, left_label="left", right_label="right"):
+    if left_val is None and right_val is None:
         return None
-    if s3_val is None or local_val is None:
-        return {"field": key, "s3": s3_val, "local": local_val, "match": False}
-    if isinstance(s3_val, (int, float)) and isinstance(local_val, (int, float)):
-        match = abs(float(s3_val) - float(local_val)) <= COMPARE_TOLERANCE
-        return {"field": key, "s3": s3_val, "local": local_val, "match": match, "delta": float(local_val) - float(s3_val)}
-    return {"field": key, "s3": s3_val, "local": local_val, "match": s3_val == local_val}
+    if left_val is None or right_val is None:
+        return {"field": key, left_label: left_val, right_label: right_val, "match": False}
+    if isinstance(left_val, (int, float)) and isinstance(right_val, (int, float)):
+        match = abs(float(left_val) - float(right_val)) <= COMPARE_TOLERANCE
+        return {
+            "field": key, left_label: left_val, right_label: right_val,
+            "match": match, "delta": float(right_val) - float(left_val),
+        }
+    return {
+        "field": key, left_label: left_val, right_label: right_val,
+        "match": left_val == right_val,
+    }
 
 
-def compare_reports(s3_report, local_report):
+def compare_reports_pair(
+    left_report,
+    right_report,
+    left_label="s3",
+    right_label="local",
+    require_tool_match=True,
+    shared_metrics_only=False,
+):
     """Return structured comparison between two standard tool reports."""
-    branch = s3_report.get("branch_name") or local_report.get("branch_name", "")
+    branch = left_report.get("branch_name") or right_report.get("branch_name", "")
     diffs = []
 
-    if s3_report.get("branch_name") != local_report.get("branch_name"):
+    if left_report.get("branch_name") != right_report.get("branch_name"):
         diffs.append({
             "field": "branch_name",
-            "s3": s3_report.get("branch_name"),
-            "local": local_report.get("branch_name"),
+            left_label: left_report.get("branch_name"),
+            right_label: right_report.get("branch_name"),
             "match": False,
         })
 
-    s3_status = s3_report.get("status", "ERROR")
-    local_status = local_report.get("status", "ERROR")
-    status_match = _status_compatible(s3_status, local_status)
+    left_status = left_report.get("status", "ERROR")
+    right_status = right_report.get("status", "ERROR")
+    status_match = _status_compatible(left_status, right_status)
     diffs.append({
         "field": "status",
-        "s3": s3_status,
-        "local": local_status,
+        left_label: left_status,
+        right_label: right_status,
         "match": status_match,
     })
 
-    s3_tool = s3_report.get("tool_name", "")
-    local_tool = local_report.get("tool_name", "")
-    tool_match = _tool_names_compatible(s3_tool, local_tool)
+    left_tool = left_report.get("tool_name", "")
+    right_tool = right_report.get("tool_name", "")
+    tool_match = True if not require_tool_match else _tool_names_compatible(left_tool, right_tool)
     diffs.append({
         "field": "tool_name",
-        "s3": s3_tool,
-        "local": local_tool,
+        left_label: left_tool,
+        right_label: right_tool,
         "match": tool_match,
     })
 
-    s3_values = s3_report.get("metric_values") or {}
-    local_values = local_report.get("metric_values") or {}
-    all_keys = sorted(set(s3_values) | set(local_values))
+    left_values = left_report.get("metric_values") or {}
+    right_values = right_report.get("metric_values") or {}
+    if shared_metrics_only:
+        all_keys = sorted(set(left_values) & set(right_values))
+    else:
+        all_keys = sorted(set(left_values) | set(right_values))
     metric_diffs = []
     for key in all_keys:
-        row = _metric_diff(key, s3_values.get(key), local_values.get(key))
+        row = _metric_diff(key, left_values.get(key), right_values.get(key), left_label, right_label)
         if row:
             metric_diffs.append(row)
             diffs.append(row)
@@ -86,13 +102,17 @@ def compare_reports(s3_report, local_report):
 
     reasons = []
     if not status_match:
-        reasons.append("status differs: s3=%s local=%s" % (s3_status, local_status))
-    if not tool_match:
-        reasons.append("tool differs: s3=%r local=%r" % (s3_tool, local_tool))
+        reasons.append("status differs: %s=%s %s=%s" % (left_label, left_status, right_label, right_status))
+    if require_tool_match and not tool_match:
+        reasons.append("tool differs: %s=%r %s=%r" % (left_label, left_tool, right_label, right_tool))
     for md in metric_diffs:
         if not md.get("match"):
-            reasons.append("%s differs: s3=%s local=%s" % (md["field"], md.get("s3"), md.get("local")))
+            reasons.append(
+                "%s differs: %s=%s %s=%s"
+                % (md["field"], left_label, md.get(left_label), right_label, md.get(right_label))
+            )
 
+    align_msg = "%s and %s reports align" % (left_label, right_label)
     return {
         "schema_version": SCHEMA_VERSION,
         "branch_name": branch,
@@ -101,10 +121,20 @@ def compare_reports(s3_report, local_report):
         "tool_match": tool_match,
         "field_diffs": diffs,
         "metric_diffs": metric_diffs,
-        "summary": "; ".join(reasons) if reasons else "S3 and local reports align",
-        "s3_report_path": s3_report.get("_path", ""),
-        "local_report_path": local_report.get("_path", ""),
+        "summary": "; ".join(reasons) if reasons else align_msg,
+        "%s_report_path" % left_label: left_report.get("_path", ""),
+        "%s_report_path" % right_label: right_report.get("_path", ""),
     }
+
+
+def compare_reports(s3_report, local_report):
+    """Return structured comparison between S3 and local standard tool reports."""
+    result = compare_reports_pair(s3_report, local_report, "s3", "local")
+    result["s3_report_path"] = result.pop("s3_report_path", s3_report.get("_path", ""))
+    result["local_report_path"] = result.pop("local_report_path", local_report.get("_path", ""))
+    if result["summary"].endswith("reports align"):
+        result["summary"] = "S3 and local reports align"
+    return result
 
 
 def _tool_names_compatible(s3_tool, local_tool):
@@ -186,6 +216,74 @@ def compare_three_reports(taxonomy_report, s3_report, local_report):
         "s3_vs_local": s3_local,
         "summary": "taxonomy=%s s3=%s local=%s; %s" % (
             tax_status, s3_status, local_status, s3_local.get("summary", "")),
+    }
+
+
+def _statuses_compatible(*statuses):
+    normalized = [s for s in statuses if s and s != "SKIPPED"]
+    if not normalized:
+        return True
+    first = normalized[0]
+    if all(s == first for s in normalized):
+        return True
+    warn_set = {"PASS", "WARN"}
+    return all(s in warn_set for s in normalized)
+
+
+def compare_four_reports(taxonomy_report, s3_report, local_report, sonar_report):
+    """Compare taxonomy, S3, local, and SonarQube standard reports."""
+    s3_local = compare_reports(s3_report, local_report)
+    local_sonar = compare_reports_pair(
+        local_report,
+        sonar_report,
+        left_label="local",
+        right_label="sonar",
+        require_tool_match=False,
+        shared_metrics_only=True,
+    )
+
+    tax_status = (taxonomy_report or {}).get("status", "SKIPPED")
+    s3_status = (s3_report or {}).get("status", "SKIPPED")
+    local_status = (local_report or {}).get("status", "SKIPPED")
+    sonar_status = (sonar_report or {}).get("status", "SKIPPED")
+
+    all_status_match = _statuses_compatible(
+        tax_status, s3_status, local_status, sonar_status
+    )
+    tool_pair_match = (
+        local_sonar["verdict"] == "MATCH"
+        and s3_local["verdict"] in ("MATCH", "PARTIAL")
+    )
+
+    if all_status_match and local_sonar["verdict"] == "MATCH":
+        verdict = "MATCH"
+    elif all_status_match or tool_pair_match:
+        verdict = "PARTIAL"
+    else:
+        verdict = "MISMATCH"
+
+    summary_parts = [
+        "taxonomy=%s s3=%s local=%s sonar=%s" % (
+            tax_status, s3_status, local_status, sonar_status),
+        "local_vs_sonar: %s" % local_sonar.get("summary", ""),
+        "s3_vs_local: %s" % s3_local.get("summary", ""),
+    ]
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "branch_name": (
+            sonar_report.get("branch_name")
+            or local_report.get("branch_name")
+            or s3_report.get("branch_name", "")
+        ),
+        "verdict": verdict,
+        "taxonomy_status": tax_status,
+        "s3_status": s3_status,
+        "local_status": local_status,
+        "sonar_status": sonar_status,
+        "s3_vs_local": s3_local,
+        "local_vs_sonar": local_sonar,
+        "summary": "; ".join(summary_parts),
     }
 
 

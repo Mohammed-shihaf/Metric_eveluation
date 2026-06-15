@@ -388,3 +388,26 @@ def materialize_branch(token, repo_slug, branch, ref=None):
         yield tmp
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def remote_branches_via_api(token, repo_slug, branch_names):
+    """Check branch existence via GitHub REST API (reliable for OAuth/PAT tokens)."""
+    import urllib.error
+    import urllib.parse
+
+    slug = normalize_repo_slug(repo_slug)
+    token = (token or "").strip()
+    status = {name: {"pushed": False, "sha": None} for name in branch_names}
+    if not slug or not token:
+        return status
+
+    for name in branch_names:
+        enc = urllib.parse.quote(name, safe="")
+        path = "/repos/%s/branches/%s" % (slug, enc)
+        try:
+            data = _api_request(token, path)
+            sha = ((data.get("commit") or {}).get("sha") or "")[:12]
+            status[name] = {"pushed": True, "sha": sha or None}
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError, KeyError):
+            continue
+    return status

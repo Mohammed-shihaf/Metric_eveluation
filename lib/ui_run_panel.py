@@ -38,6 +38,13 @@ class RunPanel(object):
         self.status_line = None
         self.log_box = None
         self._log_stream = None
+        self._result_state = None
+        self._result_label = None
+
+    def set_result(self, state, label=None):
+        """Set final status outcome (complete, error, running). Used on clean exit."""
+        self._result_state = state
+        self._result_label = label
 
     def __enter__(self):
         self._status = st.status(self.title, expanded=True)
@@ -62,9 +69,21 @@ class RunPanel(object):
     def stdout_redirect(self):
         return contextlib.redirect_stdout(self._log_stream)
 
+    @property
+    def log_lines(self):
+        if self._log_stream:
+            return list(self._log_stream._lines)
+        return []
+
     def __exit__(self, exc_type, exc, tb):
         if exc_type:
             self._status.update(label="%s — failed" % self.title, state="error")
+        elif self._result_state:
+            suffix = self._result_label or self._result_state
+            self._status.update(
+                label="%s — %s" % (self.title, suffix),
+                state=self._result_state,
+            )
         else:
             self._status.update(label="%s — complete" % self.title, state="complete")
         return self._status.__exit__(exc_type, exc, tb)

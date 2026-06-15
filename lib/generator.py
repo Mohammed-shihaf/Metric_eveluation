@@ -8,6 +8,26 @@ from lib.metrics import branch_name, sanitize_version
 from lib.registry import iter_branches, parse_techniques_arg, parse_types_arg
 
 
+def _git_env():
+    """Environment that forbids git from launching any interactive credential UI.
+
+    Without this, a failed/expired token makes Git Credential Manager open a
+    browser OAuth tab per call — across many ls-remote/push calls that becomes
+    a flood of browser tabs. These vars force git to fail fast instead.
+    """
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "Never"
+    env["GIT_ASKPASS"] = "echo"
+    env["SSH_ASKPASS"] = "echo"
+    return env
+
+
+# Disables every configured credential helper (incl. Git Credential Manager)
+# for a single invocation, so github.com auth never pops a browser.
+_GIT_NO_CRED = ["-c", "credential.helper="]
+
+
 def write_branch(root, technique_code, metric_code, branch_type, version="2.6", language="python"):
     technique_code = technique_code.upper()
     metric_code = metric_code.upper()
@@ -72,7 +92,9 @@ _BRANCH_KEEP = {
 def _checked_out_branches(root):
     """Branch names currently checked out in any worktree (cannot be re-checked-out)."""
     import subprocess
-    out = subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=root)
+    out = subprocess.check_output(
+        ["git", "worktree", "list", "--porcelain"], cwd=root, env=_git_env()
+    )
     branches = set()
     for line in out.decode("utf-8", "replace").splitlines():
         if line.startswith("branch "):
@@ -93,6 +115,9 @@ def create_git_branches(
     progress_callback=None,
 ):
     """Create/refresh git branches from validated build/ output.
+
+    Used by CLI scripts (generate_branches.py, run_dataflow_pipeline.py).
+    The Streamlit UI pipeline pushes via lib.github_api instead.
 
     Uses an isolated git worktree per branch so the live working directory
     (and any running app) is never checked out, wiped, or committed into.
@@ -123,7 +148,10 @@ def create_git_branches(
                 continue
             wt = os.path.join(wt_root, bname.replace("/", "_"))
             try:
-                subprocess.check_call(["git", "worktree", "add", "--force", "-B", bname, wt, base], cwd=root)
+                subprocess.check_call(
+                    ["git", "worktree", "add", "--force", "-B", bname, wt, base],
+                    cwd=root, env=_git_env(),
+                )
             except subprocess.CalledProcessError as exc:
                 errors.append({"branch": bname, "error": "worktree add failed: %s" % exc})
                 continue
@@ -142,60 +170,95 @@ def create_git_branches(
                         shutil.copytree(s, d)
                     else:
                         shutil.copy2(s, d)
-                subprocess.check_call(["git", "add", "-A"], cwd=wt)
+                subprocess.check_call(["git", "add", "-A"], cwd=wt, env=_git_env())
                 # commit only when the branch tip would actually change
-                if subprocess.call(["git", "diff", "--cached", "--quiet"], cwd=wt) != 0:
-                    subprocess.check_call(["git", "commit", "-m", "Add %s codebase" % bname], cwd=wt)
+                if subprocess.call(["git", "diff", "--cached", "--quiet"], cwd=wt, env=_git_env()) != 0:
+                    subprocess.check_call(
+                        ["git", "commit", "-m", "Add %s codebase" % bname],
+                        cwd=wt, env=_git_env(),
+                    )
                 created.append(bname)
                 if progress_callback:
                     progress_callback("git", idx, total, bname, "committed")
             except (subprocess.CalledProcessError, OSError) as exc:
                 errors.append({"branch": bname, "error": str(exc)})
             finally:
-                subprocess.call(["git", "worktree", "remove", "--force", wt], cwd=root)
+                subprocess.call(["git", "worktree", "remove", "--force", wt], cwd=root, env=_git_env())
     finally:
         shutil.rmtree(wt_root, ignore_errors=True)
-        subprocess.call(["git", "worktree", "prune"], cwd=root)
+        subprocess.call(["git", "worktree", "prune"], cwd=root, env=_git_env())
     return created, errors
 
 
-def push_branches(branch_names, repo_root=None):
-    """Push branches to origin. Returns (pushed_names, errors)."""
+def push_branches(branch_names, repo_root=None, github_config=None):
+    """Push branches to GitHub. Uses github_config token/repo or falls back to origin."""
     import subprocess
 
     root = repo_root or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     pushed = []
     errors = []
+    push_url = None
+    auth_cfg = []
+    if github_config:
+        from lib.github_auth import git_auth_config, github_https_url
+
+        token = github_config.get("token", "")
+        push_url = github_https_url(github_config.get("repo_slug", ""))
+        auth_cfg = git_auth_config(token)
+        if not push_url or not auth_cfg:
+            return [], [{"branch": "*", "error": "invalid GitHub push configuration"}]
     for name in branch_names:
         try:
-            subprocess.check_call(
-                ["git", "push", "-u", "origin", name, "--force"],
-                cwd=root,
-            )
+            if push_url:
+                ref = "refs/heads/%s:refs/heads/%s" % (name, name)
+                subprocess.check_call(
+                    ["git"] + _GIT_NO_CRED + auth_cfg + ["push", push_url, ref, "--force"],
+                    cwd=root,
+                    env=_git_env(),
+                )
+            else:
+                subprocess.check_call(
+                    ["git"] + _GIT_NO_CRED + ["push", "-u", "origin", name, "--force"],
+                    cwd=root,
+                    env=_git_env(),
+                )
             pushed.append(name)
         except subprocess.CalledProcessError as exc:
             errors.append({"branch": name, "error": "git push failed: %s" % exc})
     return pushed, errors
 
 
-def remote_branch_status(branch_names, repo_root=None):
-    """Check whether each branch exists on origin. Returns {name: {pushed, sha}}."""
+def remote_branch_status(branch_names, repo_root=None, github_config=None):
+    """Check whether each branch exists on the configured remote."""
+    root = repo_root or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    status = {name: {"pushed": False, "sha": None} for name in branch_names}
+
+    if github_config and github_config.get("token") and github_config.get("repo_slug"):
+        from lib.github_api import remote_branches_via_api
+
+        return remote_branches_via_api(
+            github_config["token"],
+            github_config["repo_slug"],
+            branch_names,
+        )
+
     import subprocess
 
-    root = repo_root or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    status = {}
-    for name in branch_names:
-        try:
-            out = subprocess.check_output(
-                ["git", "ls-remote", "--heads", "origin", name],
-                cwd=root,
-                stderr=subprocess.DEVNULL,
-            )
-            line = out.decode("utf-8", "replace").strip()
-            if line:
-                status[name] = {"pushed": True, "sha": line.split()[0][:12]}
-            else:
-                status[name] = {"pushed": False, "sha": None}
-        except subprocess.CalledProcessError:
-            status[name] = {"pushed": False, "sha": None}
+    cmd = ["git"] + _GIT_NO_CRED + ["ls-remote", "--heads", "origin"]
+    try:
+        out = subprocess.check_output(
+            cmd, cwd=root, stderr=subprocess.DEVNULL, env=_git_env()
+        )
+    except subprocess.CalledProcessError:
+        return status
+
+    wanted = set(branch_names)
+    for line in out.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if not line or "\t" not in line:
+            continue
+        sha, ref = line.split("\t", 1)
+        name = ref.strip().replace("refs/heads/", "")
+        if name in wanted:
+            status[name] = {"pushed": True, "sha": sha[:12]}
     return status

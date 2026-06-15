@@ -44,6 +44,7 @@ def pip_packages_for_family(family, primary=""):
         "churn": ["pydriller"],
         "duplication": ["copydetect"],
         "testmon": ["pytest", "pytest-testmon"],
+        "beniget": ["beniget", "pyflakes"],
     }
     pkgs = list(base.get(family, ["pytest"]))
     p = primary.lower()
