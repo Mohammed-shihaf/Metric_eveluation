@@ -1,3 +1,3 @@
-# SA_Decision-Outcome-Verification_Bug_2.6
+# DF_Data-Path-Correlation_Bug_2.6
 
-Structural Analysis / Decision Outcome Verification
+Data Flow Testing / Data Path Correlation
