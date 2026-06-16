@@ -3,15 +3,16 @@
 from __future__ import print_function
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
 import sys
 
 from lib.branch_asserts import assert_branch_full
-from lib.github_api import push_branch_to_github
+from lib.github_api import push_branch_to_github, read_remote_text
 from lib.github_auth import check_app_repo_access
-from lib.python_generator import generate_branch_files, write_branch
+from lib.python_generator import generate_branch_files, read_gen_meta, write_branch
 from lib.registry import iter_branches
 from lib.tool_map import pip_packages_for_family, python_tool
 
@@ -40,6 +41,7 @@ def hydrate_gen_rows_from_work(work_root, techniques, metrics, types, version):
     for tech, metric, bt, bname in iter_branches(techniques, metrics, types, version):
         branch_dir = os.path.join(work_root, bname)
         if os.path.isdir(branch_dir):
+            meta = read_gen_meta(branch_dir)
             rows.append({
                 "branch_name": bname,
                 "technique_code": tech,
@@ -48,8 +50,29 @@ def hydrate_gen_rows_from_work(work_root, techniques, metrics, types, version):
                 "dir": branch_dir,
                 "generated": True,
                 "error": "",
+                "strength": meta.get("strength", 0),
+                "loc": meta.get("loc"),
             })
     return rows
+
+
+def remote_branch_strength(github_config, branch_name):
+    """Return the strength level recorded on a remote branch, or 0 if unknown."""
+    if not github_config or not github_config.get("token") or not github_config.get("repo_slug"):
+        return 0
+    text = read_remote_text(
+        github_config["token"],
+        github_config["repo_slug"],
+        branch_name,
+        ".gen_meta.json",
+    )
+    if not text:
+        return 0
+    try:
+        meta = json.loads(text)
+        return int(meta.get("strength", 0))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return 0
 
 
 def _failure_detail(assert_row):
@@ -144,6 +167,7 @@ def generate_branches(
     work_root,
     progress_callback=None,
     clear_existing=True,
+    strength_map=None,
 ):
     """Write in-scope branches to work_root/<branch_name>."""
     work_root = os.path.abspath(work_root)
@@ -159,14 +183,23 @@ def generate_branches(
 
     for idx, (tech, metric, bt, bname) in enumerate(planned, start=1):
         branch_dir = os.path.join(work_root, bname)
+        strength = 0
+        if strength_map and bname in strength_map:
+            try:
+                strength = max(0, int(strength_map[bname]))
+            except (TypeError, ValueError):
+                strength = 0
 
         def _progress(step, msg):
             if progress_callback:
                 progress_callback(step, idx - 1, total, bname, msg)
 
-        _progress("generate", "writing branch files")
+        _progress("generate", "writing branch files (strength=%d)" % strength)
         try:
-            write_branch(branch_dir, tech, metric, bt, version, language, strength=0)
+            _bname, loc = write_branch(
+                branch_dir, tech, metric, bt, version, language, strength=strength,
+            )
+            meta = read_gen_meta(branch_dir)
             rows.append({
                 "branch_name": bname,
                 "technique_code": tech,
@@ -175,8 +208,10 @@ def generate_branches(
                 "dir": branch_dir,
                 "generated": True,
                 "error": "",
+                "strength": meta.get("strength", strength),
+                "loc": meta.get("loc", loc),
             })
-            _progress("generate", "done")
+            _progress("generate", "strength=%d, %d LOC" % (meta.get("strength", strength), meta.get("loc", loc)))
         except Exception as exc:
             err = "generate failed: %s" % exc
             rows.append({
@@ -187,10 +222,12 @@ def generate_branches(
                 "dir": branch_dir,
                 "generated": False,
                 "error": err,
+                "strength": strength,
+                "loc": None,
             })
-            stopped_at = bname
-            stop_reason = err
-            break
+            if stopped_at is None:
+                stopped_at = bname
+                stop_reason = err
 
     generated = [r for r in rows if r.get("generated")]
     if total == 0:
@@ -207,7 +244,7 @@ def generate_branches(
         "generated": generated,
         "stopped_at": stopped_at,
         "stop_reason": stop_reason,
-        "success": stopped_at is None and len(generated) == total,
+        "success": len(generated) == total,
         "total": total,
     }
 
@@ -273,21 +310,22 @@ def validate_branches(
         row = _result_row(bname, tech, metric, bt, attempts + 1, assert_row, False, branch_dir=branch_dir)
         rows.append(row)
 
-        if not passed and block_strict:
-            stopped_at = bname
-            stop_reason = _failure_detail(assert_row)
-            break
+        if not passed:
+            if stopped_at is None:
+                stopped_at = bname
+                stop_reason = _failure_detail(assert_row)
+            _progress("validated", "needs fix: %s" % _failure_detail(assert_row))
+            continue
 
-        if passed:
-            validated.append(bname)
-            _progress("validated", "strength=%s" % assert_row.get("strength_score"))
+        validated.append(bname)
+        _progress("validated", "strength=%s" % assert_row.get("strength_score"))
 
     return {
         "rows": rows,
         "validated": validated,
         "stopped_at": stopped_at,
         "stop_reason": stop_reason,
-        "success": stopped_at is None and len(validated) == total,
+        "success": len(validated) == total,
         "total": total,
     }
 
@@ -296,94 +334,147 @@ def push_branches(
     validated_rows,
     github_config,
     progress_callback=None,
+    fallback_config=None,
 ):
     """Push validated branch directories to GitHub."""
-    if not github_config or not github_config.get("token") or not github_config.get("repo_slug"):
+
+    def _empty_result(reason, needs_install=False, total=0):
         return {
             "rows": [],
             "completed": [],
             "stopped_at": None,
-            "stop_reason": "GitHub not configured",
-            "success": False,
-            "needs_install": False,
-            "total": 0,
-        }
-
-    token = github_config["token"]
-    repo_slug = github_config["repo_slug"]
-    base_branch = (github_config.get("default_branch") or "main").strip() or "main"
-    push_login = github_config.get("login", "")
-
-    ok, needs_install, access_msg = check_app_repo_access(token, repo_slug)
-    if not ok:
-        return {
-            "rows": [],
-            "completed": [],
-            "stopped_at": None,
-            "stop_reason": access_msg,
+            "stop_reason": reason,
             "success": False,
             "needs_install": needs_install,
-            "total": 0,
+            "total": total,
+            "push_method": None,
+            "used_fallback": False,
         }
 
-    candidates = [
-        r for r in (validated_rows or [])
-        if r.get("overall") in ("PASS", "PARTIAL") and r.get("dir") and os.path.isdir(r.get("dir"))
-    ]
-    total = len(candidates)
-    rows = []
-    completed = []
-    stopped_at = None
-    stop_reason = None
+    def _attempt(cfg):
+        if not cfg or not cfg.get("token") or not cfg.get("repo_slug"):
+            return _empty_result("GitHub not configured")
 
-    for idx, row in enumerate(candidates, start=1):
-        tech = row["technique_code"]
-        metric = row["metric_code"]
-        bt = row["branch_type"]
-        bname = row["branch_name"]
-        branch_dir = row["dir"]
+        token = cfg["token"]
+        repo_slug = cfg["repo_slug"]
+        base_branch = (cfg.get("default_branch") or "main").strip() or "main"
+        push_login = cfg.get("login", "")
+        push_method = cfg.get("push_method", "oauth")
 
-        def _progress(step, msg):
-            if progress_callback:
-                progress_callback(step, idx - 1, total, bname, msg)
+        ok, needs_install, access_msg = check_app_repo_access(token, repo_slug)
+        if not ok:
+            return {
+                "rows": [],
+                "completed": [],
+                "stopped_at": None,
+                "stop_reason": access_msg,
+                "success": False,
+                "needs_install": needs_install,
+                "total": 0,
+                "push_method": push_method,
+                "used_fallback": False,
+            }
 
-        _progress("push", "pushing to GitHub")
-        files = generate_branch_files(tech, metric, bt, "2.6", "python")
-        commit_sha, push_err, _method = push_branch_to_github(
-            token,
-            repo_slug,
-            bname,
-            files=files,
-            source_dir=branch_dir,
-            base=base_branch,
-            message="Add %s codebase" % bname,
-            login=push_login,
-        )
-        if push_err:
+        candidates = [
+            r for r in (validated_rows or [])
+            if r.get("overall") in ("PASS", "PARTIAL") and r.get("dir") and os.path.isdir(r.get("dir"))
+        ]
+        total = len(candidates)
+        rows = []
+        completed = []
+        stopped_at = None
+        stop_reason = None
+
+        for idx, row in enumerate(candidates, start=1):
+            tech = row["technique_code"]
+            metric = row["metric_code"]
+            bt = row["branch_type"]
+            bname = row["branch_name"]
+            branch_dir = row["dir"]
+
+            def _progress(step, msg):
+                if progress_callback:
+                    progress_callback(step, idx - 1, total, bname, msg)
+
+            _progress("push", "pushing to GitHub")
+            meta = read_gen_meta(branch_dir)
+            gen_strength = int(meta.get("strength", 0) or 0)
+            gen_version = (meta.get("version") or "2.6").strip() or "2.6"
+            gen_language = (meta.get("language") or "python").strip() or "python"
+            files = generate_branch_files(
+                tech, metric, bt, gen_version, gen_language, strength=gen_strength,
+            )
+            commit_sha, push_err, _method = push_branch_to_github(
+                token,
+                repo_slug,
+                bname,
+                files=files,
+                source_dir=branch_dir,
+                base=base_branch,
+                message="Add %s codebase" % bname,
+                login=push_login,
+            )
+            if push_err:
+                out = dict(row)
+                out.update({"pushed": False, "failure_reason": push_err, "push_method": push_method})
+                rows.append(out)
+                stopped_at = bname
+                stop_reason = push_err
+                break
+
             out = dict(row)
-            out.update({"pushed": False, "failure_reason": push_err})
+            out.update({"pushed": True, "failure_reason": "", "push_method": push_method})
+            if commit_sha:
+                out["commit_sha"] = commit_sha[:12]
             rows.append(out)
-            stopped_at = bname
-            stop_reason = push_err
-            break
+            completed.append(bname)
+            _progress("done", "pushed")
 
-        out = dict(row)
-        out.update({"pushed": True, "failure_reason": ""})
-        if commit_sha:
-            out["commit_sha"] = commit_sha[:12]
-        rows.append(out)
-        completed.append(bname)
-        _progress("done", "pushed")
+        return {
+            "rows": rows,
+            "completed": completed,
+            "stopped_at": stopped_at,
+            "stop_reason": stop_reason,
+            "success": stopped_at is None and len(completed) == total and total > 0,
+            "needs_install": False,
+            "total": total,
+            "push_method": push_method,
+            "used_fallback": False,
+        }
 
-    return {
-        "rows": rows,
-        "completed": completed,
-        "stopped_at": stopped_at,
-        "stop_reason": stop_reason,
-        "success": stopped_at is None and len(completed) == total,
-        "needs_install": False,
-        "total": total,
-    }
+    primary = _attempt(github_config)
+    if primary.get("success"):
+        return primary
+
+    fb = fallback_config
+    primary_token = (github_config or {}).get("token", "")
+    fb_token = (fb or {}).get("token", "")
+    can_fallback = (
+        fb
+        and fb_token
+        and fb_token != primary_token
+        and not primary.get("success")
+    )
+    if not can_fallback:
+        return primary
+
+    fallback_result = _attempt(fb)
+    if fallback_result.get("success"):
+        login = fb.get("login") or "shared PAT"
+        fallback_result["used_fallback"] = True
+        fallback_result["fallback_note"] = (
+            "OAuth token could not write; pushed via shared PAT (@%s). "
+            "Add **Contents: Read & write** to the GitHub App for per-user attribution."
+            % login
+        )
+        return fallback_result
+
+    fallback_result["used_fallback"] = True
+    fallback_result["stop_reason"] = (
+        "OAuth push failed; PAT fallback also failed: %s"
+        % (fallback_result.get("stop_reason") or primary.get("stop_reason") or "unknown error")
+    )
+    return fallback_result
 
 
 def process_branches_sequentially(

@@ -372,6 +372,20 @@ def generate_branch_files(technique_code, metric_code, branch_type, version="2.6
         n_fn += 4
     if loc < MIN_LOC:
         raise ValueError("Generated %s has only %d LOC (need >= %d)" % (bname, loc, MIN_LOC))
+    files[".gen_meta.json"] = json.dumps(
+        {
+            "strength": strength,
+            "technique": technique_code,
+            "metric": metric_code,
+            "branch_type": branch_type,
+            "version": version,
+            "language": language,
+            "n_functions": n_fn,
+            "loc": loc,
+            "branch_name": bname,
+        },
+        indent=2,
+    ) + "\n"
     return files
 
 
@@ -406,6 +420,19 @@ def _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_f
         if path.endswith(".py"):
             _assert_no_forbidden(content, path)
     return files
+
+
+def read_gen_meta(branch_dir):
+    """Read per-branch generation metadata written alongside the codebase."""
+    path = os.path.join(branch_dir, ".gen_meta.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
 
 
 def write_branch(root, technique_code, metric_code, branch_type, version="2.6", language="python", strength=0):

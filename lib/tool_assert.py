@@ -710,6 +710,15 @@ def tool_assert_branch(root, technique_code=None, metric_code=None, branch_type=
     from lib.metric_strength import score_metric
     from lib.registry import metric_entry
 
+    target_src = _read(ctx["target_path"]) if os.path.isfile(ctx["target_path"]) else ""
+    signals = {
+        "config_effective": config_effective,
+        "outcome": result.get("outcome", ""),
+        "defect_marker": _has_defect_marker(target_src),
+        "n_tests": _count_tests(root),
+        "n_functions": _count_functions(ctx["target_path"]),
+    }
+
     _, reg_metric = metric_entry(technique_code, metric_code)
     strength = score_metric(
         family,
@@ -717,6 +726,7 @@ def tool_assert_branch(root, technique_code=None, metric_code=None, branch_type=
         reg_metric,
         branch_type,
         technique_code=technique_code,
+        signals=signals,
     )
     strength_pass = strength.get("passed", False)
 

@@ -390,6 +390,39 @@ def materialize_branch(token, repo_slug, branch, ref=None):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def read_remote_text(token, repo_slug, ref, path):
+    """Return decoded text for a file on a remote branch, or None if absent."""
+    import base64
+    import urllib.error
+    import urllib.parse
+
+    slug = normalize_repo_slug(repo_slug)
+    token = (token or "").strip()
+    ref = (ref or "").strip()
+    rel_path = (path or "").replace("\\", "/").lstrip("/")
+    if not slug or not token or not ref or not rel_path:
+        return None
+
+    enc_path = urllib.parse.quote(rel_path, safe="/")
+    enc_ref = urllib.parse.quote(ref, safe="")
+    api_path = "/repos/%s/contents/%s?ref=%s" % (slug, enc_path, enc_ref)
+    try:
+        data = _api_request(token, api_path)
+        if not isinstance(data, dict):
+            return None
+        content = data.get("content", "")
+        encoding = data.get("encoding", "")
+        if encoding == "base64":
+            return base64.b64decode(content).decode("utf-8", "replace")
+        return content or None
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        return None
+    except Exception:
+        return None
+
+
 def remote_branches_via_api(token, repo_slug, branch_names):
     """Check branch existence via GitHub REST API (reliable for OAuth/PAT tokens)."""
     import urllib.error

@@ -105,7 +105,7 @@ def _zone_label(branch_type, in_violation):
     return "healthy" if not in_violation else "violation"
 
 
-def score_metric(family, metric_value, registry_metric, branch_type, technique_code=None):
+def score_metric(family, metric_value, registry_metric, branch_type, technique_code=None, signals=None):
     if metric_value is None:
         return {
             "score": 0.0,
@@ -152,9 +152,9 @@ def score_metric(family, metric_value, registry_metric, branch_type, technique_c
     margin = abs(value - gate)
 
     if passed:
-        score = max(55.0, min(100.0, 55.0 + (margin / span) * 45.0))
+        base_score = max(55.0, min(100.0, 55.0 + (margin / span) * 45.0))
     else:
-        score = max(0.0, min(54.0, 54.0 - margin * 4.0))
+        base_score = max(0.0, min(54.0, 54.0 - margin * 4.0))
 
     threshold_used = "%s %s" % (op, gate)
     if expected and _registry_threshold_applicable(expected, family or ""):
@@ -162,6 +162,10 @@ def score_metric(family, metric_value, registry_metric, branch_type, technique_c
 
     reason = "value=%.3f -> %s zone (need %s); gate %s" % (
         value, actual_zone, expected_zone, threshold_used.split(" (")[0],
+    )
+
+    score, passed, reason = _apply_branch_type_score(
+        base_score, passed, branch_type, signals, reason,
     )
 
     return {
@@ -172,3 +176,75 @@ def score_metric(family, metric_value, registry_metric, branch_type, technique_c
         "actual_zone": actual_zone,
         "reason": reason,
     }
+
+
+def _thoroughness_ratio(signals):
+    """How thoroughly tests cover generated functions (0..1)."""
+    n_tests = int(signals.get("n_tests") or 0)
+    n_functions = max(int(signals.get("n_functions") or 0), 1)
+    return min(1.0, float(n_tests) / float(n_functions))
+
+
+def _signal_detail(signals, t):
+    return "t=%.3f tests=%d functions=%d" % (
+        t,
+        int(signals.get("n_tests") or 0),
+        int(signals.get("n_functions") or 0),
+    )
+
+
+def _apply_branch_type_score(base_score, passed, branch_type, signals, base_reason):
+    """Adjust strength using branch-type verification signals (Bug unchanged)."""
+    if branch_type == "Bug":
+        return base_score, passed, base_reason
+    if not signals:
+        return base_score, passed, base_reason
+
+    t = _thoroughness_ratio(signals)
+    detail = _signal_detail(signals, t)
+
+    if branch_type == "CC":
+        score = base_score + (100.0 - base_score) * (0.05 + 0.15 * t)
+        return (
+            min(100.0, score),
+            passed,
+            "%s; CC control (%s)" % (base_reason, detail),
+        )
+
+    if branch_type == "BugFX":
+        outcome = str(signals.get("outcome", "")).upper()
+        defect_marker = bool(signals.get("defect_marker"))
+        resolved = outcome in ("PASS", "WARN") and not defect_marker
+        if resolved:
+            score = base_score + (100.0 - base_score) * (0.15 + 0.45 * t)
+            return (
+                min(100.0, score),
+                passed,
+                "%s; BugFX resolved (%s; outcome=%s, marker=%s)"
+                % (base_reason, detail, outcome, defect_marker),
+            )
+        score = min(base_score, 45.0) * (0.5 + 0.5 * t)
+        return (
+            score,
+            False,
+            "%s; BugFX not resolved (%s; outcome=%s, marker=%s)"
+            % (base_reason, detail, outcome, defect_marker),
+        )
+
+    if branch_type == "TCC":
+        config_effective = bool(signals.get("config_effective"))
+        if config_effective:
+            score = base_score + (100.0 - base_score) * (0.25 + 0.45 * t)
+            return (
+                min(100.0, score),
+                passed,
+                "%s; TCC config effective (%s)" % (base_reason, detail),
+            )
+        score = min(base_score, 45.0) * (0.5 + 0.5 * t)
+        return (
+            score,
+            False,
+            "%s; TCC config ineffective (%s)" % (base_reason, detail),
+        )
+
+    return base_score, passed, base_reason
