@@ -17,6 +17,7 @@ from lib.branch_pipeline import (  # noqa: E402
     pipeline_work_dir,
     process_branches_sequentially,
     push_branches,
+    remote_branch_strength,
     validate_branches,
 )
 from lib.compare import summarize_comparisons  # noqa: E402
@@ -138,6 +139,14 @@ def _app_user_email(audit=None):
     """Per-user key for SCM connections — session login email only."""
     email, _ = _qa_session_creds()
     return email.strip() if email else ""
+
+
+def _scm_app_user():
+    """App user for GitHub/SCM — session login or bound user after OAuth callback."""
+    email = _app_user_email()
+    if email:
+        return email
+    return (st.session_state.get("_bound_app_user") or "").strip()
 
 
 _USER_SCOPED_SESSION_KEYS = (
@@ -277,7 +286,7 @@ def _resolved_repo_slug():
 
 def _sync_github_session_from_db():
     """Hydrate Streamlit session from encrypted OAuth connection for current app user."""
-    app_user = _app_user_email()
+    app_user = _scm_app_user()
     if not app_user:
         return None
     conn = _oauth_connection(app_user)
@@ -389,6 +398,21 @@ def _github_read_config():
             "push_method": "pat",
         }
     return None
+
+
+def _github_pat_config():
+    """Shared classic PAT push config — fallback when OAuth token cannot write."""
+    pat = os.environ.get("GITHUB_TOKEN", "").strip()
+    repo_slug = _resolved_repo_slug() or os.environ.get("REPOSITORY_MATCH", "").strip()
+    if not pat or not repo_slug:
+        return None
+    return {
+        "token": pat,
+        "repo_slug": repo_slug,
+        "login": st.session_state.get("github_user_login", "") or repo_slug.split("/")[0],
+        "default_branch": st.session_state.get("github_default_branch", "main"),
+        "push_method": "pat",
+    }
 
 
 def _github_install_prompt(repo_slug, detail=None):
@@ -575,25 +599,21 @@ def _handle_oauth_callback():
         st.query_params.clear()
         return
 
-    app_user = _app_user_email()
-    if not app_user:
-        st.session_state["scm_callback"] = {
-            "status": "error",
-            "provider": "github",
-            "error_code": "auth_required",
-            "error_description": "Log in with QA email/password before completing GitHub OAuth.",
-        }
-        st.session_state["scm_view"] = "callback"
-        st.query_params.clear()
-        return
-
     try:
         oauth_session = consume_oauth_state(state)
-        if oauth_session.app_user != app_user:
+        session_user = _app_user_email()
+        app_user = session_user or (oauth_session.app_user or "").strip()
+        if not app_user:
+            raise ValueError("OAuth state missing app user. Sign in and connect again.")
+        if session_user and oauth_session.app_user != session_user:
             raise ValueError(
                 "OAuth session belongs to %s but you are logged in as %s. Connect again."
-                % (oauth_session.app_user, app_user)
+                % (oauth_session.app_user, session_user)
             )
+        if not session_user:
+            st.session_state["_bound_app_user"] = app_user
+            st.session_state["qa_email_saved"] = app_user
+
         svc = _oauth_service()
         result = svc.complete_connection(
             code,
@@ -643,7 +663,7 @@ def _scm_callback_view():
         if username:
             st.info("Connected as **@%s**" % username)
 
-        app_user = _app_user_email()
+        app_user = _scm_app_user()
         repos = []
         if app_user:
             repos = _scm_run_discovery(app_user)
@@ -677,6 +697,11 @@ def _scm_callback_view():
     error_code = data.get("error_code") or "unknown"
     st.error(data.get("error_description") or "Could not connect your %s account." % provider_name)
     st.caption("Error: `%s`" % error_code)
+    if error_code in ("auth_required", "complete_failed"):
+        st.info(
+            "If you were signed in before GitHub redirected, your browser session may have expired. "
+            "Use the **Account** panel in the sidebar to sign in again, then click **Try again**."
+        )
     if st.button("Try again", type="primary", width="stretch"):
         st.session_state.pop("scm_view", None)
         st.session_state.pop("scm_callback", None)
@@ -686,7 +711,7 @@ def _scm_callback_view():
 
 def _scm_repo_picker_view():
     """Repository discovery + picker — mirrors reference repo browse after OAuth."""
-    app_user = _app_user_email()
+    app_user = _scm_app_user()
     if not app_user or not st.session_state.get("github_login_ok"):
         st.warning("Connect GitHub before selecting a repository.")
         if st.button("Back"):
@@ -1052,12 +1077,28 @@ def _tab_branches(filters):
     n_generated = len([r for r in gen_rows if r.get("generated")])
     n_validated = len([r for r in validate_rows if r.get("overall") in ("PASS", "PARTIAL")])
     all_validated = validate_ok and n_validated > 0 and n_validated == n_generated
+    in_scope = filters["summary"]["branches"]
+    n_on_github = 0
+    repo_push_rows = []
+    if github_ready and in_scope:
+        repo_push_rows, _ = _branch_push_status(in_scope)
+        n_on_github = len([r for r in repo_push_rows if r.get("on_github") == "yes"])
 
-    if n_generated:
-        st.caption(
-            "Pipeline state: **%d** generated on disk | **%d** validated | work dir: `%s`"
-            % (n_generated, n_validated, work_root)
-        )
+    st.subheader("Pipeline progress")
+    st_c1, st_c2, st_c3 = st.columns(3)
+    gen_done = n_generated >= total and total > 0
+    val_done = all_validated
+    push_done = n_on_github >= total and total > 0
+    with st_c1:
+        st.metric("1 — Generate", "%d / %d" % (n_generated, total), "done" if gen_done else "pending")
+    with st_c2:
+        st.metric("2 — Validate", "%d / %d" % (n_validated, total), "done" if val_done else "pending")
+    with st_c3:
+        st.metric("3 — Push", "%d / %d" % (n_on_github, total), "done" if push_done else "pending")
+    st.caption("Work dir: `%s`" % work_root)
+
+    pat_fallback = _github_pat_config()
+    can_push = all_validated and bool(_github_push_config() or pat_fallback)
     if not all_validated:
         if not n_generated:
             push_hint = "Run **Generate** first."
@@ -1065,13 +1106,41 @@ def _tab_branches(filters):
             push_hint = "Run **Validate** after generate (tools run per branch — expect several seconds each)."
         elif not validate_ok:
             push_hint = "Validation did not pass for all branches — review the table and re-run Validate."
-        elif not github_ready:
+        elif not github_ready and not pat_fallback:
             push_hint = "Connect GitHub and select a repository."
-        elif needs_install:
-            push_hint = "Install the GitHub App on your repository (Contents: Read & write)."
         else:
             push_hint = "Complete validation before push."
         st.info("Push blocked: %s" % push_hint)
+    elif needs_install and pat_fallback:
+        st.info(
+            "GitHub App OAuth lacks **Contents: Read & write** — **Push** will try OAuth first, "
+            "then fall back to the shared PAT in `.env.local`."
+        )
+    elif needs_install:
+        push_hint = "Install the GitHub App on your repository (Contents: Read & write)."
+        st.info("Push blocked: %s" % push_hint)
+
+    if github_ready and in_scope:
+        st.subheader("Your repository")
+        repo_status_cols = st.columns([3, 1])
+        with repo_status_cols[1]:
+            if st.button("Refresh repo status", key="refresh_repo_status_branches", width="stretch"):
+                st.session_state.pop("push_status_cache", None)
+                st.rerun()
+        repo_status_display = []
+        for prow in repo_push_rows:
+            exists = prow.get("on_github") == "yes"
+            repo_status_display.append({
+                "branch": prow.get("branch"),
+                "in your repo": "yes" if exists else "new",
+                "remote sha": prow.get("remote_sha") or "—",
+                "planned action": "escalate (+1 strength)" if exists else "create",
+            })
+        st.dataframe(repo_status_display, width="stretch")
+        st.caption(
+            "Branches already in **%s** will be regenerated with higher strength (more code) on **Generate**."
+            % (repo_slug or "your repo")
+        )
 
     btn_gen, btn_val, btn_push = st.columns(3)
     with btn_gen:
@@ -1093,30 +1162,60 @@ def _tab_branches(filters):
             "3 — Push to GitHub",
             type="primary",
             width="stretch",
-            disabled=not all_validated or not github_ready or needs_install,
+            disabled=not can_push or (needs_install and not pat_fallback),
         )
 
+    def _rows_have_asserts(rows):
+        for r in rows or []:
+            if r.get("overall") or r.get("structure"):
+                return True
+        return False
+
     def _assert_table(rows, pushed_col=False):
+        if not rows:
+            return
+        has_asserts = _rows_have_asserts(rows)
         display = []
         for r in rows:
-            row = {
-                "branch": r.get("branch_name"),
-                "attempts": r.get("attempts"),
-                "structure": r.get("structure"),
-                "tool_support": r.get("tool_support"),
-                "metric_behavior": r.get("metric_behavior"),
-                "strength": r.get("strength_score"),
-                "threshold": (r.get("expected_threshold") or "")[:50],
-                "overall": r.get("overall"),
-                "detail": r.get("failure_reason") or r.get("messages") or r.get("error", ""),
-            }
+            if has_asserts:
+                row = {
+                    "branch": r.get("branch_name"),
+                    "type": r.get("branch_type"),
+                    "attempts": r.get("attempts"),
+                    "structure": r.get("structure"),
+                    "tool_support": r.get("tool_support"),
+                    "metric_behavior": r.get("metric_behavior"),
+                    "strength": r.get("strength_score"),
+                    "threshold": (r.get("expected_threshold") or "")[:50],
+                    "overall": r.get("overall"),
+                    "detail": r.get("failure_reason") or r.get("messages") or r.get("error", ""),
+                }
+            else:
+                row = {
+                    "branch": r.get("branch_name"),
+                    "type": r.get("branch_type"),
+                    "generated": "yes" if r.get("generated") else "no",
+                    "strength": r.get("strength"),
+                    "loc": r.get("loc"),
+                    "dir": r.get("dir") or "",
+                }
             if pushed_col:
                 row["pushed"] = "yes" if r.get("pushed") else "no"
+                if r.get("commit_sha"):
+                    row["commit"] = r.get("commit_sha")
             display.append(row)
-        if display:
-            st.dataframe(display, width="stretch")
+        st.dataframe(display, width="stretch")
 
     if run_generate:
+        strength_map = {}
+        read_cfg = _github_read_config()
+        if read_cfg and in_scope:
+            for name in in_scope:
+                prow = next((r for r in repo_push_rows if r.get("branch") == name), None)
+                if prow and prow.get("on_github") == "yes":
+                    strength_map[name] = remote_branch_strength(read_cfg, name) + 1
+                else:
+                    strength_map[name] = 0
         with RunPanel("Generating %d branches" % total) as panel:
             with panel.stdout_redirect():
                 gen_result = generate_branches(
@@ -1127,6 +1226,7 @@ def _tab_branches(filters):
                     filters["language"],
                     work_root,
                     progress_callback=panel.progress,
+                    strength_map=strength_map or None,
                 )
             st.session_state["gen_rows"] = gen_result.get("rows", [])
             st.session_state.pop("validate_rows", None)
@@ -1137,6 +1237,18 @@ def _tab_branches(filters):
                 panel.set_result("complete", "complete")
                 st.toast("Generated %d branches" % len(gen_result.get("generated", [])), icon="✅")
                 st.rerun()
+            elif gen_result.get("generated"):
+                st.warning(
+                    "Generated %d/%d branch(es); first failure at **%s**: %s"
+                    % (
+                        len(gen_result.get("generated", [])),
+                        gen_result.get("total", total),
+                        gen_result.get("stopped_at"),
+                        gen_result.get("stop_reason"),
+                    )
+                )
+                panel.set_result("error", "partial")
+                st.toast("Generate finished with errors", icon="⚠️")
             else:
                 st.error("Generate stopped at **%s**: %s" % (
                     gen_result.get("stopped_at"), gen_result.get("stop_reason")))
@@ -1187,19 +1299,22 @@ def _tab_branches(filters):
                 push_result = push_branches(
                     validate_rows,
                     _github_push_config(),
+                    fallback_config=_github_pat_config(),
                     progress_callback=panel.progress,
                 )
             st.session_state["last_branch_pipeline"] = push_result
             _assert_table(push_result.get("rows", []), pushed_col=True)
             if push_result.get("success"):
                 st.success("Pushed %d branch(es) to GitHub." % len(push_result.get("completed", [])))
+                if push_result.get("used_fallback"):
+                    st.info(push_result.get("fallback_note") or "Pushed via shared PAT fallback.")
                 st.session_state["last_pushed"] = push_result.get("completed", [])
                 st.session_state.pop("push_status_cache", None)
                 panel.set_result("complete", "complete")
                 pipeline_toast = ("success", "Pushed %d branch(es)" % len(push_result.get("completed", [])))
             elif push_result.get("stop_reason"):
                 st.error(push_result.get("stop_reason"))
-                if push_result.get("needs_install"):
+                if push_result.get("needs_install") and push_result.get("push_method") == "oauth":
                     _github_install_prompt(repo_slug, push_result.get("stop_reason"))
                 panel.set_result("error", "blocked")
             elif push_result.get("stopped_at"):
@@ -1214,14 +1329,12 @@ def _tab_branches(filters):
         else:
             st.toast(msg, icon="⚠️")
 
-    if st.session_state.get("gen_rows"):
-        st.subheader("Generated branches")
-        _assert_table(st.session_state["gen_rows"])
-    if st.session_state.get("validate_rows"):
-        st.subheader("Assert validation (strength)")
-        _assert_table(st.session_state["validate_rows"])
+    branch_table_rows = validate_rows if validate_rows else gen_rows
+    if branch_table_rows:
+        table_title = "Branch validation (strength)" if validate_rows else "Generated branches (local)"
+        st.subheader(table_title)
+        _assert_table(branch_table_rows, pushed_col=False)
 
-    in_scope = filters["summary"]["branches"]
     st.subheader("GitHub push status")
     refresh = st.button("Refresh GitHub status", key="refresh_push_branches")
     if refresh:
@@ -1242,8 +1355,8 @@ def _tab_branches(filters):
         )
 
     if st.session_state.get("last_asserts"):
-        st.subheader("Last assert results")
-        st.dataframe(st.session_state["last_asserts"], width="stretch")
+        with st.expander("Last validation details"):
+            st.dataframe(st.session_state["last_asserts"], width="stretch")
 
 
 def _tab_whitebox(filters):
@@ -1256,17 +1369,14 @@ def _tab_whitebox(filters):
         st.success("Running as **%s** (change user via sidebar **Sign out**)." % app_user)
 
     email_for_auth, password_for_auth = _qa_session_creds()
-
     branches = filters["summary"]["branches"]
-    branches_csv = ",".join(branches)
-    st.code(branches_csv, language=None)
+    n_in_scope = len(branches)
 
     read_cfg = _github_read_config()
-    st.subheader("GitHub push gate")
     if read_cfg:
         st.caption(
-            "Checking branch presence on **%s** (%s)."
-            % (read_cfg.get("repo_slug", "—"), read_cfg.get("push_method", "oauth"))
+            "GitHub repo: **%s** (%s) — %d branch(es) in sidebar scope."
+            % (read_cfg.get("repo_slug", "—"), read_cfg.get("push_method", "oauth"), n_in_scope)
         )
     elif not _github_creds_ready():
         st.warning(
@@ -1274,33 +1384,78 @@ def _tab_whitebox(filters):
             "**REPOSITORY_MATCH** in `.env.local` to check branch status."
         )
 
-    wb_refresh = st.button("Refresh GitHub status", key="refresh_push_whitebox")
+    hdr_cols = st.columns([3, 1])
+    with hdr_cols[1]:
+        wb_refresh = st.button("Refresh status", key="refresh_push_whitebox", width="stretch")
     if wb_refresh:
         st.session_state.pop("push_status_cache", None)
-    push_rows, all_pushed = _branch_push_status(branches, force_refresh=wb_refresh)
-    st.dataframe(push_rows, width="stretch")
-    if not read_cfg:
-        all_pushed = False
-    elif not all_pushed:
-        not_pushed = [r["branch"] for r in push_rows if r["on_github"] != "yes"]
-        st.error(
-            "Push all in-scope branches on the Branches tab before running whitebox. "
-            "Missing on GitHub: %s" % ", ".join(not_pushed)
-        )
 
-    # Show current whitebox status for in-scope branches
-    wb_status = whitebox_completion(branches, root=str(ROOT))
-    if wb_status:
-        st.subheader("Whitebox status")
-        st.dataframe(
-            [{
-                "branch": b,
-                "status": wb_status[b]["status"],
-                "detail": wb_status[b]["detail"],
-                "gate_score": wb_status[b].get("gate_score"),
-            } for b in branches],
-            width="stretch",
-        )
+    push_rows, _ = _branch_push_status(branches, force_refresh=wb_refresh)
+    push_by_branch = {r["branch"]: r for r in push_rows}
+    wb_status = whitebox_completion(branches, root=str(ROOT)) or {}
+
+    readiness = []
+    for bname in branches:
+        push = push_by_branch.get(bname, {})
+        wb = wb_status.get(bname, {})
+        on_github = push.get("on_github") == "yes"
+        readiness.append({
+            "branch": bname,
+            "on_github": "yes" if on_github else "no",
+            "whitebox": wb.get("status", "NOT_COMPLETED"),
+            "gate_score": wb.get("gate_score"),
+            "detail": wb.get("detail") or ("on GitHub" if on_github else "not pushed"),
+            "ready": "yes" if on_github else "no",
+        })
+
+    n_on_github = len([r for r in readiness if r["on_github"] == "yes"])
+    n_completed = len([r for r in readiness if r["whitebox"] == "COMPLETED"])
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.metric("In scope", n_in_scope)
+    with m2:
+        st.metric("On GitHub", n_on_github)
+    with m3:
+        st.metric("Whitebox done", n_completed)
+
+    st.subheader("Branch readiness")
+    st.dataframe(readiness, width="stretch")
+
+    on_github = [r["branch"] for r in readiness if r["on_github"] == "yes"]
+    if not on_github and read_cfg:
+        st.info("No in-scope branches on GitHub yet. Generate and push on the **Branches** tab first.")
+
+    picker_key = "whitebox_branch_picker"
+    if picker_key not in st.session_state:
+        last = st.session_state.get("last_whitebox_branches", on_github)
+        st.session_state[picker_key] = [b for b in last if b in on_github] or list(on_github)
+    else:
+        st.session_state[picker_key] = [
+            b for b in st.session_state[picker_key] if b in on_github
+        ]
+
+    st.subheader("Branches to run")
+    sel_cols = st.columns([1, 1, 4])
+    with sel_cols[0]:
+        if st.button("Select all on GitHub", key="wb_select_all", disabled=not on_github, width="stretch"):
+            st.session_state[picker_key] = list(on_github)
+            st.rerun()
+    with sel_cols[1]:
+        if st.button("Clear selection", key="wb_clear_sel", width="stretch"):
+            st.session_state[picker_key] = []
+            st.rerun()
+
+    selected = st.multiselect(
+        "Choose branches for this whitebox batch",
+        options=on_github,
+        help="Only branches already pushed to GitHub appear here. Adjust sidebar filters to change scope.",
+        key=picker_key,
+    )
+
+    if not selected:
+        st.warning("Select at least one branch on GitHub to run whitebox.")
+    elif len(selected) < len(on_github):
+        st.caption("Running **%d** of **%d** branches on GitHub." % (len(selected), len(on_github)))
 
     allow_partial = st.checkbox(
         "Allow partial catalog (skip branches not yet in Testable)",
@@ -1315,20 +1470,21 @@ def _tab_whitebox(filters):
         help="How long to wait for GitHub branches to appear in the Testable catalog.",
     )
 
-    wb_can_run = bool(read_cfg) and all_pushed and filters.get("qa_ready")
+    wb_can_run = bool(read_cfg) and bool(selected) and filters.get("qa_ready")
     if st.button(
         "Run whitebox batch",
         type="primary",
         width="stretch",
         disabled=not wb_can_run,
     ):
-        if not read_cfg or not all_pushed:
-            st.error("Push all in-scope branches to GitHub before running whitebox.")
+        if not read_cfg:
+            st.error("Connect GitHub or configure read credentials before running whitebox.")
             return
         if not email_for_auth or not password_for_auth:
             st.error("Sign in using the **Account** panel in the sidebar before running whitebox.")
             return
-        with RunPanel("Whitebox QA") as panel:
+        branches_csv = ",".join(selected)
+        with RunPanel("Whitebox QA (%d branches)" % len(selected)) as panel:
             gh_repo = (read_cfg or {}).get("repo_slug") or _github_repo_for_links()
             if not gh_repo:
                 st.error(
@@ -1369,7 +1525,7 @@ def _tab_whitebox(filters):
                     os.environ.pop("BRANCH_SYNC_TIMEOUT_SEC", None)
             st.session_state["last_qa_rc"] = rc
             st.session_state["last_qa_batch"] = batch_dir
-            st.session_state["last_whitebox_branches"] = branches
+            st.session_state["last_whitebox_branches"] = selected
             skipped_catalog = batch_meta.get("catalog_skipped") or []
             if skipped_catalog:
                 st.warning(
@@ -1378,10 +1534,10 @@ def _tab_whitebox(filters):
                     % (len(skipped_catalog), ", ".join(skipped_catalog))
                 )
 
-            wb_after = whitebox_completion(branches, root=str(ROOT))
+            wb_after = whitebox_completion(selected, root=str(ROOT))
             proof_rows = []
-            panel.progress("proofs", 0, len(branches), "", "collecting taxonomy + S3 proofs")
-            for idx, bname in enumerate(branches, 1):
+            panel.progress("proofs", 0, len(selected), "", "collecting taxonomy + S3 proofs")
+            for idx, bname in enumerate(selected, 1):
                 info = wb_after.get(bname, {})
                 row = {
                     "branch": bname,
@@ -1408,36 +1564,44 @@ def _tab_whitebox(filters):
                     row["taxonomy_report"] = "—"
                     row["s3_report"] = "—"
                 proof_rows.append(row)
-                panel.progress("proofs", idx, len(branches), bname, row["whitebox"])
+                panel.progress("proofs", idx, len(selected), bname, row["whitebox"])
 
             st.session_state["last_whitebox_status"] = proof_rows
             st.session_state["last_whitebox_log"] = panel.log_lines
-            st.dataframe(proof_rows, width="stretch")
+            st.subheader("Run results")
+            st.dataframe(
+                [{
+                    "branch": r["branch"],
+                    "whitebox": r.get("whitebox"),
+                    "taxonomy": r.get("taxonomy_report"),
+                    "s3": r.get("s3_report"),
+                    "detail": r.get("taxonomy_detail") or r.get("detail", ""),
+                } for r in proof_rows],
+                width="stretch",
+            )
             completed = sum(1 for r in proof_rows if r["whitebox"] == "COMPLETED")
             if rc != 0 or completed == 0:
                 st.warning(
                     "Whitebox finished with issues: %d/%d branches completed with taxonomy reports"
-                    % (completed, len(branches))
+                    % (completed, len(selected))
                 )
             else:
-                st.success("Whitebox completed for all %d branches" % completed)
+                st.success("Whitebox completed for all %d selected branches" % completed)
         st.toast("Whitebox batch finished", icon="✅")
 
-    if st.session_state.get("last_whitebox_status"):
-        st.subheader("Last whitebox run")
-        st.dataframe(
-            [{
-                "branch": r["branch"],
-                "whitebox": r.get("whitebox"),
-                "taxonomy": r.get("taxonomy_report"),
-                "s3": r.get("s3_report"),
-                "taxonomy_detail": r.get("taxonomy_detail", r.get("detail", "")),
-                "s3_detail": r.get("s3_detail", ""),
-            } for r in st.session_state["last_whitebox_status"]],
-            width="stretch",
-        )
-        if st.session_state.get("last_whitebox_log"):
-            with st.expander("Whitebox run logs"):
+    elif st.session_state.get("last_whitebox_status"):
+        with st.expander("Previous whitebox run results", expanded=False):
+            st.dataframe(
+                [{
+                    "branch": r["branch"],
+                    "whitebox": r.get("whitebox"),
+                    "taxonomy": r.get("taxonomy_report"),
+                    "s3": r.get("s3_report"),
+                    "detail": r.get("taxonomy_detail") or r.get("detail", ""),
+                } for r in st.session_state["last_whitebox_status"]],
+                width="stretch",
+            )
+            if st.session_state.get("last_whitebox_log"):
                 st.code("\n".join(st.session_state["last_whitebox_log"]), language=None)
 
 
@@ -1735,6 +1899,7 @@ def main():
 
     if st.session_state.get("scm_view") in ("callback", "repos"):
         st.sidebar.image(str(LOGO), width=120)
+        _sidebar_user_login(str(ROOT / ".env.local"))
         _render_scm_flow()
         return
 
