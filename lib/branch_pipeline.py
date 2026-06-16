@@ -31,6 +31,27 @@ def pipeline_work_dir(repo_root, app_user=None):
     return path
 
 
+def hydrate_gen_rows_from_work(work_root, techniques, metrics, types, version):
+    """Rebuild gen_rows from on-disk branch dirs (survives Streamlit reruns)."""
+    work_root = os.path.abspath(work_root)
+    if not os.path.isdir(work_root):
+        return []
+    rows = []
+    for tech, metric, bt, bname in iter_branches(techniques, metrics, types, version):
+        branch_dir = os.path.join(work_root, bname)
+        if os.path.isdir(branch_dir):
+            rows.append({
+                "branch_name": bname,
+                "technique_code": tech,
+                "metric_code": metric,
+                "branch_type": bt,
+                "dir": branch_dir,
+                "generated": True,
+                "error": "",
+            })
+    return rows
+
+
 def _failure_detail(assert_row):
     if not assert_row:
         return "validation failed"
@@ -172,6 +193,15 @@ def generate_branches(
             break
 
     generated = [r for r in rows if r.get("generated")]
+    if total == 0:
+        return {
+            "rows": rows,
+            "generated": generated,
+            "stopped_at": None,
+            "stop_reason": "No branches in scope",
+            "success": False,
+            "total": 0,
+        }
     return {
         "rows": rows,
         "generated": generated,
@@ -198,6 +228,16 @@ def validate_branches(
     validated = []
     stopped_at = None
     stop_reason = None
+
+    if total == 0:
+        return {
+            "rows": rows,
+            "validated": validated,
+            "stopped_at": None,
+            "stop_reason": "No generated branches to validate — run Generate first",
+            "success": False,
+            "total": 0,
+        }
 
     for idx, gen in enumerate(rows_in, start=1):
         tech = gen["technique_code"]

@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from lib.branch_pipeline import (  # noqa: E402
     generate_branches,
+    hydrate_gen_rows_from_work,
     pipeline_work_dir,
     process_branches_sequentially,
     push_branches,
@@ -117,6 +118,8 @@ def _readiness():
 
 def _qa_session_creds():
     """Return (email, password) saved from the login form, or (None, None)."""
+    if not st.session_state.get("qa_login_ok"):
+        return None, None
     email = st.session_state.get("qa_email_saved", "").strip()
     password = st.session_state.get("qa_password_saved", "")
     if email and password:
@@ -125,26 +128,90 @@ def _qa_session_creds():
 
 
 def _qa_creds_ready(audit):
-    """QA ready when URLs configured and creds from session or .env.local."""
+    """QA ready when URLs configured and the current browser session is logged in."""
     urls_ok = audit.get("testable_urls_ok", False)
-    env_creds = any(
-        r["configured"] for r in audit.get("testable", [])
-        if r["key"] in ("AUTH_EMAIL", "AUTH_PASSWORD")
-    )
     session_creds = _qa_session_creds()[0] is not None
-    return urls_ok and (env_creds or session_creds)
+    return urls_ok and session_creds and bool(st.session_state.get("qa_login_ok"))
 
 
 def _app_user_email(audit=None):
-    """Per-user key for SCM connections (QA session email or .env.local AUTH_EMAIL)."""
+    """Per-user key for SCM connections — session login email only."""
     email, _ = _qa_session_creds()
+    return email.strip() if email else ""
+
+
+_USER_SCOPED_SESSION_KEYS = (
+    "github_token_saved", "github_repo_slug", "github_user_login",
+    "github_login_ok", "github_login_msg", "github_repo_url",
+    "github_default_branch", "github_push_method", "github_oauth_url_cache",
+    "github_needs_install", "github_access_detail",
+    "scm_view", "scm_callback", "scm_discovered_repos", "scm_discovery_error",
+    "gen_rows", "validate_rows", "validate_ok", "last_branch_pipeline",
+    "last_asserts", "last_pushed", "push_status_cache",
+    "last_whitebox_branches", "last_qa_rc", "last_qa_batch",
+    "last_local_run", "last_local_log", "last_sonar_run", "last_sonar_log",
+    "repo_switch_notice",
+)
+
+
+def _clear_user_scoped_session():
+    for key in _USER_SCOPED_SESSION_KEYS:
+        st.session_state.pop(key, None)
+
+
+def _bind_app_user(email):
+    """Bind Streamlit session to one QA user; clear stale state on switch."""
+    email = (email or "").strip()
+    prev = (st.session_state.get("_bound_app_user") or "").strip()
+    if prev and email and prev != email:
+        _clear_user_scoped_session()
     if email:
-        return email.strip()
-    audit = audit or _readiness()
-    for row in audit.get("testable", []):
-        if row.get("key") == "AUTH_EMAIL" and row.get("configured"):
-            return os.environ.get("AUTH_EMAIL", "").strip()
-    return ""
+        st.session_state["_bound_app_user"] = email
+    else:
+        st.session_state.pop("_bound_app_user", None)
+        _clear_user_scoped_session()
+
+
+def _sidebar_user_login(env_file):
+    """Global per-browser login — required before GitHub connect or whitebox."""
+    st.sidebar.subheader("Account")
+    bound = st.session_state.get("_bound_app_user", "")
+    if bound and st.session_state.get("qa_login_ok"):
+        st.sidebar.caption("Signed in as **%s**" % bound)
+        if st.sidebar.button("Sign out", width="stretch", key="sidebar_sign_out"):
+            st.session_state.pop("qa_email_saved", None)
+            st.session_state.pop("qa_password_saved", None)
+            st.session_state.pop("qa_login_ok", None)
+            st.session_state.pop("qa_login_msg", None)
+            _bind_app_user("")
+            st.rerun()
+        return
+
+    with st.sidebar.form("sidebar_qa_login", clear_on_submit=False):
+        qa_email = st.text_input("QA email", value=st.session_state.get("qa_email_saved", ""))
+        qa_password = st.text_input("QA password", type="password")
+        submitted = st.form_submit_button("Sign in", width="stretch")
+
+    if submitted:
+        email = qa_email.strip()
+        password = qa_password
+        if not email or not password:
+            st.sidebar.error("Enter email and password.")
+        else:
+            ok, msg = verify_login(env_file, email, password)
+            if ok:
+                st.session_state["qa_email_saved"] = email
+                st.session_state["qa_password_saved"] = password
+                st.session_state["qa_login_ok"] = True
+                st.session_state["qa_login_msg"] = msg
+                _bind_app_user(email)
+                st.rerun()
+            else:
+                st.session_state["qa_login_ok"] = False
+                st.session_state["qa_login_msg"] = msg
+                st.sidebar.error(msg)
+    elif not st.session_state.get("qa_login_ok"):
+        st.sidebar.caption("Sign in to connect GitHub and run the pipeline as yourself.")
 
 
 def _oauth_service():
@@ -215,6 +282,12 @@ def _sync_github_session_from_db():
         return None
     conn = _oauth_connection(app_user)
     if not conn or not conn.access_token:
+        for key in (
+            "github_login_ok", "github_token_saved", "github_user_login",
+            "github_repo_slug", "github_repo_url", "github_push_method",
+            "github_needs_install", "github_access_detail",
+        ):
+            st.session_state.pop(key, None)
         return None
     st.session_state["github_login_ok"] = True
     st.session_state["github_user_login"] = conn.provider_username or ""
@@ -251,10 +324,10 @@ def _github_session():
 
 
 def _github_push_config():
-    """Push config: prefer per-user OAuth; GITHUB_TOKEN is last-resort fallback."""
+    """Push config: per-user OAuth only when signed in; shared PAT if nobody is signed in."""
     repo_slug = _resolved_repo_slug()
-
     app_user = _app_user_email()
+
     if app_user:
         conn = _oauth_connection(app_user)
         if conn and conn.access_token and repo_slug:
@@ -265,6 +338,10 @@ def _github_push_config():
                 "default_branch": st.session_state.get("github_default_branch", "main"),
                 "push_method": "oauth",
             }
+        session = _github_session()
+        if session:
+            return session
+        return None
 
     pat = os.environ.get("GITHUB_TOKEN", "").strip()
     if pat and repo_slug:
@@ -721,7 +798,7 @@ def _github_connect_oauth():
 
     app_user = _app_user_email()
     if not app_user:
-        st.warning("Verify QA login on the Whitebox tab before connecting GitHub.")
+        st.warning("Sign in using the **Account** panel in the sidebar before connecting GitHub.")
         return
 
     st.caption(
@@ -747,6 +824,8 @@ def _github_connect_oauth():
 
 def _sidebar_filters():
     st.sidebar.image(str(LOGO), width=120)
+    env_file = str(ROOT / ".env.local")
+    _sidebar_user_login(env_file)
     st.sidebar.header("Selection")
     registry = load_registry()
     tech_opts = technique_options(registry)
@@ -890,8 +969,8 @@ def _tab_branches(filters):
         )
         if using_pat:
             st.info(
-                "Using shared **GITHUB_TOKEN** fallback — connect GitHub OAuth above so pushes go as "
-                "your own account."
+                "Sign in via the sidebar **Account** panel, then connect GitHub OAuth so pushes "
+                "use your own GitHub identity (not the shared server PAT)."
             )
         if needs_install:
             _github_install_prompt(
@@ -923,9 +1002,44 @@ def _tab_branches(filters):
     )
 
     work_root = pipeline_work_dir(str(ROOT), app_user=_app_user_email())
+
+    if not st.session_state.get("gen_rows"):
+        hydrated = hydrate_gen_rows_from_work(
+            work_root,
+            filters["techniques"],
+            filters["metrics"],
+            filters["types"],
+            filters["version"],
+        )
+        if hydrated:
+            st.session_state["gen_rows"] = hydrated
+
     gen_rows = st.session_state.get("gen_rows") or []
     validate_rows = st.session_state.get("validate_rows") or []
-    all_validated = bool(validate_rows) and bool(st.session_state.get("validate_ok"))
+    validate_ok = bool(st.session_state.get("validate_ok"))
+    n_generated = len([r for r in gen_rows if r.get("generated")])
+    n_validated = len([r for r in validate_rows if r.get("overall") in ("PASS", "PARTIAL")])
+    all_validated = validate_ok and n_validated > 0 and n_validated == n_generated
+
+    if n_generated:
+        st.caption(
+            "Pipeline state: **%d** generated on disk | **%d** validated | work dir: `%s`"
+            % (n_generated, n_validated, work_root)
+        )
+    if not all_validated:
+        if not n_generated:
+            push_hint = "Run **Generate** first."
+        elif not validate_rows:
+            push_hint = "Run **Validate** after generate (tools run per branch — expect several seconds each)."
+        elif not validate_ok:
+            push_hint = "Validation did not pass for all branches — review the table and re-run Validate."
+        elif not github_ready:
+            push_hint = "Connect GitHub and select a repository."
+        elif needs_install:
+            push_hint = "Install the GitHub App on your repository (Contents: Read & write)."
+        else:
+            push_hint = "Complete validation before push."
+        st.info("Push blocked: %s" % push_hint)
 
     btn_gen, btn_val, btn_push = st.columns(3)
     with btn_gen:
@@ -940,7 +1054,7 @@ def _tab_branches(filters):
             "2 — Validate branches",
             type="primary",
             width="stretch",
-            disabled=not gen_rows,
+            disabled=n_generated == 0,
         )
     with btn_push:
         run_push = st.button(
@@ -990,6 +1104,7 @@ def _tab_branches(filters):
                 st.success("Generated %d branch(es) in `%s`." % (len(gen_result.get("generated", [])), work_root))
                 panel.set_result("complete", "complete")
                 st.toast("Generated %d branches" % len(gen_result.get("generated", [])), icon="✅")
+                st.rerun()
             else:
                 st.error("Generate stopped at **%s**: %s" % (
                     gen_result.get("stopped_at"), gen_result.get("stop_reason")))
@@ -998,7 +1113,9 @@ def _tab_branches(filters):
             _assert_table(gen_result.get("rows", []))
 
     if run_validate:
-        with RunPanel("Validating %d branches (strength asserts)" % len(gen_rows)) as panel:
+        gen_rows = st.session_state.get("gen_rows") or []
+        n_to_validate = len([r for r in gen_rows if r.get("generated") and r.get("dir")])
+        with RunPanel("Validating %d branches (strength asserts)" % n_to_validate) as panel:
             with panel.stdout_redirect():
                 val_result = validate_branches(
                     gen_rows,
@@ -1023,6 +1140,7 @@ def _tab_branches(filters):
                 )
                 panel.set_result("complete", "complete")
                 st.toast("Validation passed", icon="✅")
+                st.rerun()
             else:
                 st.error("Validation blocked at **%s**: %s" % (
                     val_result.get("stopped_at"), val_result.get("stop_reason")))
@@ -1030,6 +1148,7 @@ def _tab_branches(filters):
                 st.toast("Validation blocked", icon="⚠️")
 
     if run_push:
+        validate_rows = st.session_state.get("validate_rows") or []
         pipeline_toast = ("warning", "Push finished with issues")
         with RunPanel("Pushing %d branches to GitHub" % len(validate_rows)) as panel:
             with panel.stdout_redirect():
@@ -1098,46 +1217,11 @@ def _tab_branches(filters):
 def _tab_whitebox(filters):
     st.header("2 — Whitebox QA + taxonomy + S3")
     if not filters.get("qa_ready"):
-        st.warning("Enter QA email/password below or configure AUTH_EMAIL/AUTH_PASSWORD in .env.local")
+        st.warning("Sign in using the **Account** panel in the sidebar (QA email + password).")
 
-    st.caption("Credentials are session-only and are not saved to disk.")
-    with st.form("qa_login_form", clear_on_submit=False):
-        c1, c2 = st.columns(2)
-        with c1:
-            qa_email = st.text_input(
-                "QA email",
-                value=st.session_state.get("qa_email_saved", ""),
-            )
-        with c2:
-            qa_password = st.text_input("QA password", type="password")
-        verify_clicked = st.form_submit_button("Verify login", width="stretch")
-
-    if verify_clicked:
-        email = qa_email.strip()
-        password = qa_password
-        if not email or not password:
-            st.error("Enter both QA email and password.")
-        else:
-            st.session_state["qa_email_saved"] = email
-            st.session_state["qa_password_saved"] = password
-            ok, msg = verify_login(
-                filters["env_file"],
-                email,
-                password,
-            )
-            if ok:
-                st.session_state["qa_login_msg"] = msg
-                st.session_state["qa_login_ok"] = True
-                st.success(msg)
-            else:
-                st.session_state["qa_login_ok"] = False
-                st.session_state["qa_login_msg"] = msg
-                st.error(msg)
-    elif st.session_state.get("qa_login_msg"):
-        if st.session_state.get("qa_login_ok"):
-            st.success(st.session_state["qa_login_msg"])
-        else:
-            st.error(st.session_state["qa_login_msg"])
+    app_user = _app_user_email()
+    if app_user and st.session_state.get("qa_login_ok"):
+        st.success("Running as **%s** (change user via sidebar **Sign out**)." % app_user)
 
     email_for_auth, password_for_auth = _qa_session_creds()
 
@@ -1592,6 +1676,8 @@ def _tab_comparison(filters):
 def main():
     load_env(str(ROOT / ".env.local"))
     _handle_oauth_callback()
+    if st.session_state.get("qa_login_ok"):
+        _bind_app_user(st.session_state.get("qa_email_saved", ""))
     _sync_github_session_from_db()
     _sync_repo_artifacts()
     if st.session_state.get("repo_switch_notice"):

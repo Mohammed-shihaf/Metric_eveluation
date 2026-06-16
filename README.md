@@ -38,15 +38,16 @@ Same flow as Testable SCM integrations (`ai-testable-platform`):
 3. **Permissions & events** → user authorization (OAuth) + **Repository contents: Read & write**
 4. Copy **Client ID** / **Client secret** into `.env.local` (`GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_REDIRECT_URI`)
 5. Set `GITHUB_APP_SLUG` and `SCM_TOKEN_SECRET`; optionally `SCM_DB_PATH`
-6. Open **Branches** → verify QA login → click **Connect GitHub** → authorize on GitHub
-7. On the callback screen, click **View my repositories** → pick a repo → **Use this repository**
-8. Install the GitHub App on the selected repo if prompted (**Contents: Read & write**)
+6. Open **Account** in the sidebar → sign in with QA email/password
+7. Open **Branches** → click **Connect GitHub** → authorize on GitHub
+8. On the callback screen, click **View my repositories** → pick a repo → **Use this repository**
+9. Install the GitHub App on the selected repo if prompted (**Contents: Read & write**)
 
 Token refresh for `ghu_…` user tokens is automatic.
 
-**Multi-user:** Each QA user picks their own GitHub repository in the app. The selection is stored per user in `scm_connections.db` (keyed by `AUTH_EMAIL` / session email). Branch push and whitebox use that repo — not a shared `REPOSITORY_MATCH`.
+**Multi-user:** Each browser session signs in with its own QA account. GitHub OAuth and repo selection are stored per user in `scm_connections.db` (keyed by session email). Branch push and whitebox run as that user — not a shared identity from `.env.local`.
 
-Optional server PAT: set `GITHUB_TOKEN` in `.env.local` for push (all users). OAuth is still required so each user can select their target repo.
+Optional server PAT: set `GITHUB_TOKEN` in `.env.local` only for unattended/CLI push when nobody is signed in. Signed-in users must connect GitHub OAuth; pushes never fall back to the shared PAT.
 
 Optional CLI only: `REPOSITORY_MATCH` in `.env.local` for notebook/CLI whitebox runs when not using the UI.
 
