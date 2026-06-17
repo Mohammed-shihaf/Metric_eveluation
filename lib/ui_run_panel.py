@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import contextlib
 import io
+import time
 
 import streamlit as st
 
@@ -65,6 +66,21 @@ class RunPanel(object):
         )
         if message:
             st.caption(message)
+
+    def hold_until(self, start_ts, min_seconds, phase="Finalizing"):
+        """Keep the panel alive until min_seconds elapsed from start_ts."""
+        min_seconds = max(float(min_seconds or 0), 0.0)
+        while True:
+            elapsed = time.time() - start_ts
+            if elapsed >= min_seconds:
+                break
+            self.bar.progress(min(elapsed / min_seconds, 1.0))
+            self.status_line.markdown(
+                "**%s** — `%s` — **%.0fs / %ds**"
+                % (self.title, phase, elapsed, int(min_seconds))
+            )
+            time.sleep(0.5)
+        self.bar.progress(1.0)
 
     def stdout_redirect(self):
         return contextlib.redirect_stdout(self._log_stream)

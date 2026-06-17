@@ -19,7 +19,7 @@ N_FUNCTIONS_BY_METRIC = {
     "TDI": 36,
     "QRA": 40,
 }
-MIN_LOC = 1000  # enforced at generation time
+MIN_LOC = 2500  # enforced at generation time
 
 
 def n_functions(abbrev):

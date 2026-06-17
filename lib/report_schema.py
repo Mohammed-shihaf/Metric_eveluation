@@ -19,7 +19,7 @@ from lib.tool_assert import (
 
 SCHEMA_VERSION = "1.0"
 VALID_SOURCES = ("s3", "local", "taxonomy", "sonar")
-VALID_STATUSES = ("PASS", "FAIL", "WARN", "SKIPPED", "ERROR")
+VALID_STATUSES = ("PASS", "FAIL", "WARN", "SKIPPED", "ERROR", "UNAVAILABLE")
 
 
 def _utc_now():
@@ -107,8 +107,9 @@ def _parse_metric_values_from_raw(raw_summary):
         ("findings", r"findings=(\d+)"),
         ("vulns", r"vulns=(\d+)"),
         ("test_fn_ratio", r"test_fn_ratio=([\d.]+)"),
+        ("mutation_ratio", r"mutation_ratio=([\d.]+)"),
         ("churn_score", r"churn_score=([\d.]+)"),
-        ("dup_pct", r"dup=([\d.]+)%"),
+        ("dup_pct", r"dup=([\d.]+)%?"),
         ("issues", r"issues=(\d+)"),
         ("tests", r"tests=(\d+)"),
     ):
@@ -132,9 +133,22 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
     extra = {}
     if result.get("log"):
         extra["tool_log"] = result.get("log")
-    if result.get("status") == "SKIPPED" and result.get("message"):
+    if "real_tool" in result:
+        extra["real_tool"] = bool(result.get("real_tool"))
+    if result.get("status") == "UNAVAILABLE":
+        extra["skip_reason"] = result.get("message", "real tool unavailable")
+        extra["tool_unavailable"] = result.get("message", "")
+        norm_status = "UNAVAILABLE"
+        metric_values = {}
+        family = _tool_family_for_metric(technique_code, metric_code) if technique_code else ""
+        raw = raw or result.get("message", "")
+    elif result.get("status") == "SKIPPED" and result.get("message"):
         extra["skip_reason"] = result.get("message")
-    if result.get("status") == "SKIPPED":
+        norm_status = "SKIPPED"
+        metric_values = {}
+        family = ""
+        raw = raw or result.get("message", "")
+    elif result.get("status") == "SKIPPED":
         norm_status = "SKIPPED"
         metric_values = {}
         family = ""
@@ -146,6 +160,8 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
             norm_status = _status_from_metric_values(family, metric_values, branch_type)
         elif not raw:
             norm_status = "ERROR"
+        elif result.get("real_tool") and result.get("status") in ("PASS", "FAIL"):
+            norm_status = result.get("status")
         else:
             norm_status = "ERROR"
 
@@ -157,6 +173,28 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
 
     if family:
         extra["tool_family"] = family
+
+    _diagnostic_keys = (
+        "actual_outcome",
+        "expected_outcome",
+        "strength_pass",
+        "strength_score",
+        "strength_reason",
+        "raw_metric_value",
+        "metric_value",
+        "tool_outcome",
+        "config_effective",
+        "expected_threshold",
+    )
+    for key in _diagnostic_keys:
+        if key in result:
+            val = result.get(key)
+            if val is not None and val != "":
+                extra[key] = val
+            elif isinstance(val, bool):
+                extra[key] = val
+    if result.get("status") in ("PASS", "FAIL"):
+        extra["assert_status"] = result.get("status")
 
     return make_report(
         technique_code=technique_code,
@@ -235,7 +273,7 @@ def _status_from_metric_values(family, values, branch_type=None):
         vulns = int(values.get("vulns", 0))
         return _outcome_from_violation(vulns > 0)
     if family == "mutation":
-        ratio = float(values.get("test_fn_ratio", 1))
+        ratio = float(values.get("mutation_ratio", values.get("test_fn_ratio", 1)))
         return _outcome_from_violation(ratio < MUTATION_RATIO_FAIL)
     if family == "churn":
         score = float(values.get("churn_score", 0))

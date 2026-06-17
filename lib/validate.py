@@ -87,10 +87,10 @@ def _parse_config(root, pkg):
 
 
 def _assert_generic(root, technique_code, metric_code, branch_type, version, language):
-    parsed = parse_branch_name(os.path.basename(root))
-    assert parsed, "cannot parse folder name: %s" % root
+    folder = os.path.basename(os.path.normpath(root))
+    parsed = parse_branch_name(folder)
+    assert parsed, "cannot parse folder name: %s" % folder
     assert parsed["tech"] == technique_code.upper()
-    assert parsed["metric"] == metric_code.upper()
     assert parsed["type"] == branch_type
     assert parsed["version"] == sanitize_version(version)
 
@@ -98,10 +98,15 @@ def _assert_generic(root, technique_code, metric_code, branch_type, version, lan
     pkg = package_name(technique_code)
     cfg = _parse_config(root, pkg)
     assert cfg.get("BRANCH_TYPE") == branch_type
-    assert cfg.get("TARGET_METRIC_ABBREV") == metric_code.upper()
+    assert cfg.get("TARGET_METRIC_ABBREV") == metric_code.upper(), (
+        "config TARGET_METRIC_ABBREV=%s expected %s"
+        % (cfg.get("TARGET_METRIC_ABBREV"), metric_code.upper())
+    )
     assert cfg.get("TARGET_TECHNIQUE") == technique_code.upper()
     if language:
         assert cfg.get("LANGUAGE") == language
+    # When several metrics share one branch_slug (e.g. MU LES / LES2 / LES3), the folder
+    # name parses to the first registry match — config.py is authoritative for metric code.
 
     target_path = os.path.join(root, pkg, "%s.py" % metric["module_key"])
     assert os.path.isfile(target_path)
@@ -110,7 +115,9 @@ def _assert_generic(root, technique_code, metric_code, branch_type, version, lan
     for m in tech["metrics"]:
         path = os.path.join(root, pkg, "%s.py" % m["module_key"])
         assert os.path.isfile(path)
-        if m["metric_code"] != metric_code.upper():
+        # Metrics sharing the target's module_key (duplicate module keys) map to
+        # the same rich target file, so skip the stub-size check for them.
+        if m["metric_code"] != metric_code.upper() and m["module_key"] != metric["module_key"]:
             lines = _line_count(path)
             assert STUB_MIN_LINES <= lines <= STUB_MAX_LINES, "stub %s lines=%d" % (m["module_key"], lines)
 
@@ -157,6 +164,14 @@ def validate_branch(root, technique_code=None, metric_code=None, branch_type=Non
     if technique_code == "SA" and language == "python":
         try:
             loc = _assert_generic(root, technique_code, metric_code, branch_type, version, language)
+        except AssertionError as exc:
+            raise BranchValidationError("%s: %s" % (folder, exc)) from exc
+        return folder, branch_type, loc
+
+    if (language or "python").lower() != "python":
+        from lib.validate_multi import assert_branch_structure
+        try:
+            loc = assert_branch_structure(root, technique_code, metric_code, branch_type, version, language)
         except AssertionError as exc:
             raise BranchValidationError("%s: %s" % (folder, exc)) from exc
         return folder, branch_type, loc

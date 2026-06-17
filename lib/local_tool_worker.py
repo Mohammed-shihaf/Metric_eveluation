@@ -24,6 +24,11 @@ def main():
     p.add_argument("--version", default="2.6")
     p.add_argument("--commit-sha", default="")
     p.add_argument("--run-id", default="")
+    p.add_argument(
+        "--require-real-tool",
+        action="store_true",
+        help="Fail if the registry primary tool cannot execute (no structural fallback)",
+    )
     args = p.parse_args()
 
     from lib.local_tool_runner import run_local_tool_report
@@ -37,6 +42,7 @@ def main():
         commit_sha=args.commit_sha or None,
         run_id=args.run_id or None,
         install=False,
+        require_real_tool=args.require_real_tool,
     )
     print(REPORT_START)
     print(json.dumps(report))

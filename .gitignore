@@ -9,6 +9,7 @@ __pycache__/
 **/.scannerwork/
 taxonomy_reports/
 proofs/
+.tool_env/
 s3_downloads/
 .pipeline_repo.json
 scm_connections.db

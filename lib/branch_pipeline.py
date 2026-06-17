@@ -10,11 +10,15 @@ import subprocess
 import sys
 
 from lib.branch_asserts import assert_branch_full
+from lib.branch_post_verify import verify_generated_branch
 from lib.github_api import push_branch_to_github, read_remote_text
 from lib.github_auth import check_app_repo_access
-from lib.python_generator import generate_branch_files, read_gen_meta, write_branch
+from lib.lang_generators.base import effective_strength
+from lib.lang_generators import write_branch
+from lib.python_generator import generate_branch_files, read_gen_meta
 from lib.registry import iter_branches
-from lib.tool_map import pip_packages_for_family, python_tool
+from lib.tool_map import metric_tool, pip_packages_for_family, pip_packages_for_primary
+from lib.lang_tool_runners import packages_for_language
 
 
 def _user_work_key(app_user):
@@ -147,14 +151,21 @@ def _fix_branch(tech, metric, bt, version, language, branch_path, auto_install, 
     if not auto_install:
         return "; ".join(notes)
 
-    info = python_tool(tech, metric)
+    info = metric_tool(tech, metric, language)
     family = info["family"]
     if family == "unknown":
         return "; ".join(notes)
 
-    pkgs = pip_packages_for_family(family, info["primary"])
-    ok, msg = _install_packages(pkgs)
-    notes.append(msg if ok else "install failed: %s" % msg)
+    pkgs = packages_for_language(family, info["primary"], language)
+    if not pkgs and (language or "python").lower() == "python":
+        pkgs = pip_packages_for_primary(info.get("primary", ""), family, tech)
+    if not pkgs:
+        pkgs = pip_packages_for_family(family, info["primary"])
+    if (language or "python").lower() == "python":
+        ok, msg = _install_packages(pkgs)
+        notes.append(msg if ok else "install failed: %s" % msg)
+    else:
+        notes.append("lang=%s tools=%s" % (language, ",".join(pkgs) or "structural"))
     return "; ".join(notes)
 
 
@@ -189,6 +200,7 @@ def generate_branches(
                 strength = max(0, int(strength_map[bname]))
             except (TypeError, ValueError):
                 strength = 0
+        strength = effective_strength(strength)
 
         def _progress(step, msg):
             if progress_callback:
@@ -200,6 +212,34 @@ def generate_branches(
                 branch_dir, tech, metric, bt, version, language, strength=strength,
             )
             meta = read_gen_meta(branch_dir)
+            _progress("verify", "structure, import, pytest")
+
+            def _verify_cb(step, msg):
+                _progress(step, msg)
+
+            vr = verify_generated_branch(
+                branch_dir, tech, metric, bt, version, language,
+                progress_callback=_verify_cb,
+            )
+            if not vr.get("ok"):
+                err = "verify failed: %s" % "; ".join(vr.get("messages") or ["unknown"])
+                rows.append({
+                    "branch_name": bname,
+                    "technique_code": tech,
+                    "metric_code": metric,
+                    "branch_type": bt,
+                    "dir": branch_dir,
+                    "generated": False,
+                    "error": err,
+                    "strength": meta.get("strength", strength),
+                    "loc": vr.get("loc") or meta.get("loc", loc),
+                })
+                if stopped_at is None:
+                    stopped_at = bname
+                    stop_reason = err
+                _progress("verify", err[:120])
+                continue
+            verified_loc = vr.get("loc") or meta.get("loc", loc)
             rows.append({
                 "branch_name": bname,
                 "technique_code": tech,
@@ -209,9 +249,13 @@ def generate_branches(
                 "generated": True,
                 "error": "",
                 "strength": meta.get("strength", strength),
-                "loc": meta.get("loc", loc),
+                "loc": verified_loc,
             })
-            _progress("generate", "strength=%d, %d LOC" % (meta.get("strength", strength), meta.get("loc", loc)))
+            _progress("verify", "strength=%d, %d LOC — %s" % (
+                meta.get("strength", strength),
+                verified_loc,
+                (vr.get("messages") or [""])[-1],
+            ))
         except Exception as exc:
             err = "generate failed: %s" % exc
             rows.append({
@@ -276,6 +320,33 @@ def validate_branches(
             "total": 0,
         }
 
+    if auto_install and (language or "python").strip().lower() == "python":
+        install_pkgs = []
+        for gen in rows_in:
+            info = metric_tool(gen["technique_code"], gen["metric_code"], language)
+            pkgs = pip_packages_for_primary(
+                info.get("primary", ""),
+                info.get("family", ""),
+                gen["technique_code"],
+            )
+            if not pkgs and (language or "python").strip().lower() != "python":
+                pkgs = packages_for_language(info["family"], info.get("primary", ""), language)
+            for pkg in pkgs:
+                if pkg not in install_pkgs:
+                    install_pkgs.append(pkg)
+        if install_pkgs:
+            if progress_callback:
+                progress_callback(
+                    "install",
+                    0,
+                    total,
+                    "",
+                    "installing tools: %s" % ",".join(install_pkgs),
+                )
+            ok, msg = _install_packages(install_pkgs)
+            if progress_callback:
+                progress_callback("install", 0, total, "", msg if ok else "install failed: %s" % msg)
+
     for idx, gen in enumerate(rows_in, start=1):
         tech = gen["technique_code"]
         metric = gen["metric_code"]
@@ -288,24 +359,33 @@ def validate_branches(
                 progress_callback(step, idx - 1, total, bname, msg)
 
         attempts = 0
-        strength = 0
-        assert_row = assert_branch_full(branch_dir, tech, metric, bt, version, language)
+        try:
+            base_strength = max(0, int(gen.get("strength") or 0))
+        except (TypeError, ValueError):
+            base_strength = 0
+        assert_row = assert_branch_full(
+            branch_dir, tech, metric, bt, version, language, require_real_tool=True,
+        )
         _progress("assert", assert_row.get("overall", "?"))
 
         while assert_row.get("overall") == "FAIL" and attempts < max_fix_attempts:
             attempts += 1
-            strength = attempts
-            _progress("fix", "strength %d attempt %d/%d" % (strength, attempts, max_fix_attempts))
-            _fix_branch(tech, metric, bt, version, language, branch_dir, auto_install, strength=strength)
-            assert_row = assert_branch_full(branch_dir, tech, metric, bt, version, language)
+            fix_strength = base_strength + attempts
+            _progress("fix", "strength %d attempt %d/%d" % (fix_strength, attempts, max_fix_attempts))
+            _fix_branch(tech, metric, bt, version, language, branch_dir, auto_install, strength=fix_strength)
+            assert_row = assert_branch_full(
+                branch_dir, tech, metric, bt, version, language, require_real_tool=True,
+            )
             _progress("assert", assert_row.get("overall", "?"))
 
         overall = assert_row.get("overall")
-        passed = overall in ("PASS", "PARTIAL")
+        passed = overall == "PASS"
         if overall == "PASS" and assert_row.get("strength_pass") is False:
             passed = False
-        if overall == "PARTIAL" and assert_row.get("metric_behavior") == "SKIPPED":
-            passed = True
+        if assert_row.get("metric_behavior") == "SKIPPED":
+            passed = False
+        if overall == "PARTIAL":
+            passed = False
 
         row = _result_row(bname, tech, metric, bt, attempts + 1, assert_row, False, branch_dir=branch_dir)
         rows.append(row)
@@ -327,6 +407,154 @@ def validate_branches(
         "stop_reason": stop_reason,
         "success": len(validated) == total,
         "total": total,
+    }
+
+
+def _branch_strength_score(row):
+    if not row:
+        return 0.0
+    try:
+        return float(row.get("strength_score") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def validate_with_regeneration(
+    gen_rows,
+    version,
+    language,
+    max_fix_attempts=2,
+    auto_install=True,
+    max_rounds=25,
+    progress_callback=None,
+    block_strict=True,
+):
+    """Validate branches; regenerate failed branches and re-validate until all pass or max_rounds."""
+    result = validate_branches(
+        gen_rows,
+        version,
+        language,
+        max_fix_attempts=max_fix_attempts,
+        auto_install=auto_install,
+        progress_callback=progress_callback,
+        block_strict=block_strict,
+    )
+    rows_by_branch = {r["branch_name"]: r for r in result.get("rows", [])}
+    validated = set(result.get("validated") or [])
+    total = result.get("total", 0)
+    rounds_used = 0
+
+    if total == 0:
+        result["rounds_used"] = 0
+        return result
+
+    stalled = False
+    best_by_branch = {
+        bname: _branch_strength_score(row)
+        for bname, row in rows_by_branch.items()
+        if bname not in validated
+    }
+
+    while len(validated) < total and rounds_used < max_rounds:
+        rounds_used += 1
+        failed_rows = [
+            g for g in (gen_rows or [])
+            if g.get("generated") and g.get("dir") and g["branch_name"] not in validated
+        ]
+        if not failed_rows:
+            break
+        n_failed = len(failed_rows)
+        for idx, g in enumerate(failed_rows, start=1):
+            bname = g["branch_name"]
+            try:
+                base_strength = max(0, int(g.get("strength") or 0))
+            except (TypeError, ValueError):
+                base_strength = 0
+            new_strength = base_strength + rounds_used
+            if progress_callback:
+                progress_callback(
+                    "regenerate",
+                    idx - 1,
+                    n_failed,
+                    bname,
+                    "round %d strength=%d" % (rounds_used, new_strength),
+                )
+            write_branch(
+                g["dir"],
+                g["technique_code"],
+                g["metric_code"],
+                g["branch_type"],
+                version,
+                language,
+                strength=new_strength,
+            )
+            meta = read_gen_meta(g["dir"])
+            g["strength"] = meta.get("strength", new_strength)
+            g["loc"] = meta.get("loc")
+
+        sub = validate_branches(
+            failed_rows,
+            version,
+            language,
+            max_fix_attempts=max_fix_attempts,
+            auto_install=auto_install,
+            progress_callback=progress_callback,
+            block_strict=block_strict,
+        )
+        for r in sub.get("rows", []):
+            rows_by_branch[r["branch_name"]] = r
+        validated |= set(sub.get("validated") or [])
+
+        still_failing = [b for b in best_by_branch if b not in validated]
+        if not still_failing:
+            break
+
+        improved = False
+        for bname in still_failing:
+            score = _branch_strength_score(rows_by_branch.get(bname))
+            prev = best_by_branch.get(bname, 0.0)
+            if score > prev + 1e-6:
+                improved = True
+            best_by_branch[bname] = max(prev, score)
+
+        if not improved:
+            stalled = True
+            break
+
+    rows = list(rows_by_branch.values())
+    stopped_at = next((r["branch_name"] for r in rows if r["branch_name"] not in validated), None)
+    stop_reason = None
+    if stopped_at:
+        sr = rows_by_branch.get(stopped_at) or {}
+        msgs = sr.get("messages") or ""
+        if isinstance(msgs, str) and msgs:
+            msg_list = [m.strip() for m in msgs.split(";") if m.strip()]
+        else:
+            msg_list = msgs if isinstance(msgs, list) else []
+        stop_reason = _failure_detail({
+            "structure": sr.get("structure"),
+            "tool_support": sr.get("tool_support"),
+            "metric_behavior": sr.get("metric_behavior"),
+            "overall": sr.get("overall"),
+            "strength_score": sr.get("strength_score"),
+            "messages": msg_list,
+        })
+        if rounds_used:
+            stop_reason = "%s (after %d regenerate round(s))" % (stop_reason, rounds_used)
+        if stalled:
+            stuck_score = _branch_strength_score(rows_by_branch.get(stopped_at))
+            stop_reason = "%s; no improvement after %d round(s) - strength stuck at %.1f" % (
+                stop_reason, rounds_used, stuck_score,
+            )
+
+    return {
+        "rows": rows,
+        "validated": sorted(validated),
+        "stopped_at": stopped_at,
+        "stop_reason": stop_reason,
+        "success": len(validated) == total and total > 0,
+        "total": total,
+        "rounds_used": rounds_used,
     }
 
 

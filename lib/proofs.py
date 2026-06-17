@@ -9,7 +9,11 @@ from pathlib import Path
 
 from lib.compare import compare_report_files
 from lib.github_api import materialize_branch
-from lib.local_tool_runner import run_local_tool_report, run_local_tool_batch_isolated
+from lib.local_tool_runner import (
+    run_local_tool_report,
+    run_local_tool_batch_isolated,
+    _resolve_branch_path,
+)
 from lib.metrics import report_group_label
 from lib.registry import iter_branches
 from lib.report_schema import (
@@ -33,18 +37,24 @@ USABLE_REPORT_STATUSES = frozenset(("PASS", "FAIL", "WARN"))
 
 
 @contextlib.contextmanager
-def branch_source(repo_root, build_dir, branch_name, github_config=None, ref=None):
-    """Yield a filesystem path to branch source (GitHub zipball or local build/)."""
-    if github_config and github_config.get("token") and github_config.get("repo_slug"):
-        with materialize_branch(
-            github_config["token"],
-            github_config["repo_slug"],
-            branch_name,
-            ref=ref or branch_name,
-        ) as path:
-            yield path
-    else:
-        yield str(Path(repo_root) / build_dir / branch_name)
+def branch_source(
+    repo_root,
+    build_dir,
+    branch_name,
+    github_config=None,
+    ref=None,
+    local_root=None,
+):
+    """Yield branch source path (local pipeline copy first, else GitHub or build/)."""
+    with _resolve_branch_path(
+        str(repo_root),
+        build_dir,
+        branch_name,
+        github_config=github_config,
+        ref=ref,
+        local_root=local_root,
+    ) as path:
+        yield path
 
 
 
@@ -332,6 +342,7 @@ def collect_local_proof(
     root=None,
     meta=None,
     github_config=None,
+    local_root=None,
 ):
     """Run local tool and write standard local_report.json."""
     repo_root = Path(root or ROOT)
@@ -348,7 +359,12 @@ def collect_local_proof(
     run_id = (meta or {}).get("run_id", "")
 
     with branch_source(
-        repo_root, build_dir, branch_name, github_config=github_config, ref=commit_sha or branch_name,
+        repo_root,
+        build_dir,
+        branch_name,
+        github_config=github_config,
+        ref=commit_sha or branch_name,
+        local_root=local_root,
     ) as branch_path:
         report = run_local_tool_report(
             branch_path,
@@ -359,6 +375,7 @@ def collect_local_proof(
             commit_sha=commit_sha,
             run_id=run_id,
             install=install,
+            require_real_tool=True,
         )
     out_path = out_dir / "local_report.json"
     save_report(report, out_path)
@@ -471,6 +488,7 @@ def collect_local_batch(
     require_whitebox=True,
     isolated=None,
     github_config=None,
+    local_root=None,
 ):
     """Run local tools for an explicit branch list."""
     repo_root = Path(root or ROOT)
@@ -511,18 +529,25 @@ def collect_local_batch(
             run_id_by_branch=run_id_by_branch,
             progress_callback=progress_callback,
             github_config=github_config,
+            local_root=local_root,
         )
         report_by_branch = {r.get("branch_name"): r for r in reports}
         for idx, (bname, _) in enumerate(runnable, start=1):
             report = report_by_branch.get(bname, {})
+            extra = report.get("extra") or {}
             row = {
                 "branch_name": bname,
                 "local_report": report,
                 "status": report.get("status", "OK"),
                 "tool": report.get("tool_name", ""),
-                "skip_reason": (report.get("extra") or {}).get("skip_reason", ""),
-                "tool_log": (report.get("extra") or {}).get("tool_log", ""),
-                "install_msg": (report.get("extra") or {}).get("install_msg", ""),
+                "executed_tool": extra.get("executed_tool", ""),
+                "real_tool": extra.get("real_tool"),
+                "skip_reason": extra.get("skip_reason", ""),
+                "tool_log": extra.get("tool_log", ""),
+                "tool_stderr": extra.get("tool_stderr", ""),
+                "install_msg": extra.get("install_msg", ""),
+                "install_failed": extra.get("install_failed", []),
+                "report_path": report.get("_path") or extra.get("report_path", ""),
             }
             results.append(row)
         return results
@@ -533,15 +558,23 @@ def collect_local_batch(
         row = {"branch_name": bname}
         try:
             report = collect_local_proof(
-                bname, build_dir=build_dir, install=install, root=repo_root, meta=meta,
+                bname,
+                build_dir=build_dir,
+                install=install,
+                root=repo_root,
+                meta=meta,
                 github_config=github_config,
+                local_root=local_root,
             )
             row["local_report"] = report
             row["status"] = report.get("status", "OK")
             row["tool"] = report.get("tool_name", "")
-            row["skip_reason"] = (report.get("extra") or {}).get("skip_reason", "")
-            row["tool_log"] = (report.get("extra") or {}).get("tool_log", "")
-            row["install_msg"] = (report.get("extra") or {}).get("install_msg", "")
+            extra = report.get("extra") or {}
+            row["executed_tool"] = extra.get("executed_tool", "")
+            row["real_tool"] = extra.get("real_tool")
+            row["skip_reason"] = extra.get("skip_reason", "")
+            row["tool_log"] = extra.get("tool_log", "")
+            row["install_msg"] = extra.get("install_msg", "")
             if progress_callback:
                 progress_callback("local", idx, total, bname, row["status"])
         except Exception as exc:

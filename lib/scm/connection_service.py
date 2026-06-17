@@ -63,7 +63,7 @@ class GitHubConnectionService:
                 "SCM_TOKEN_SECRET in .env.local."
             )
 
-    def initiate_connection(self, state, login_hint=None):
+    def initiate_connection(self, state, login_hint=None, account_picker=False):
         """Start OAuth — mirrors reference POST /v1/scm/github/connect."""
         self._require_config()
         url = github_oauth.build_authorization_url(
@@ -72,6 +72,7 @@ class GitHubConnectionService:
             state=state,
             scopes=github_oauth.default_scopes(),
             login_hint=login_hint,
+            account_picker=account_picker,
         )
         return ConnectInitResult(authorization_url=url, state=state)
 

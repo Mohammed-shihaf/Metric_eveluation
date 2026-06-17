@@ -444,3 +444,29 @@ def remote_branches_via_api(token, repo_slug, branch_names):
         except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError, KeyError):
             continue
     return status
+
+
+def list_repo_branches(token, repo_slug, max_pages=10):
+    """List all branch names on a GitHub repository."""
+    import urllib.error
+
+    slug = normalize_repo_slug(repo_slug)
+    token = (token or "").strip()
+    if not slug or not token:
+        return []
+    names = []
+    for page in range(1, max_pages + 1):
+        path = "/repos/%s/branches?per_page=100&page=%d" % (slug, page)
+        try:
+            data = _api_request(token, path)
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+            break
+        if not isinstance(data, list) or not data:
+            break
+        for item in data:
+            name = (item.get("name") or "").strip()
+            if name:
+                names.append(name)
+        if len(data) < 100:
+            break
+    return names

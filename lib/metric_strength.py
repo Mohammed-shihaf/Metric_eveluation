@@ -105,7 +105,7 @@ def _zone_label(branch_type, in_violation):
     return "healthy" if not in_violation else "violation"
 
 
-def score_metric(family, metric_value, registry_metric, branch_type, technique_code=None, signals=None):
+def score_metric(family, metric_value, registry_metric, branch_type, technique_code=None, signals=None, language="python"):
     if metric_value is None:
         return {
             "score": 0.0,
@@ -118,7 +118,10 @@ def score_metric(family, metric_value, registry_metric, branch_type, technique_c
 
     primary = ""
     if registry_metric:
-        primary = ((registry_metric.get("tools") or {}).get("python") or {}).get("primary") or ""
+        lang = (language or "python").strip().lower()
+        tools = (registry_metric.get("tools") or {})
+        lang_tools = tools.get(lang) or tools.get("python") or {}
+        primary = lang_tools.get("primary") or ""
     if not family and primary:
         family = tool_family(primary, technique_code or "")
 
@@ -132,19 +135,24 @@ def score_metric(family, metric_value, registry_metric, branch_type, technique_c
             op, gate = ">=", 5.0
     elif family == "complexity" and not _registry_threshold_applicable(expected, family):
         op, gate = "<=", COMPLEXITY_FAIL_THRESHOLD
+    elif family in ("security", "sca", "lint", "beniget", "crosshair"):
+        op, gate = "==", 0.0
+    elif family == "mutation":
+        # Runner uses test_fn_ratio proxy (0–2), not registry % kill-rate until full mutmut run.
+        op, gate = ">=", MUTATION_RATIO_FAIL
 
     value = float(metric_value)
-    in_violation = _metric_in_violation(family or "unknown", value, op, gate)
+    runner_outcome = str((signals or {}).get("outcome", "")).upper()
+    if runner_outcome in ("PASS", "FAIL"):
+        in_violation = runner_outcome == "FAIL"
+    else:
+        in_violation = _metric_in_violation(family or "unknown", value, op, gate)
 
     if branch_type == "Bug":
         passed = in_violation
         expected_zone = "violation"
     else:
-        if family == "coverage":
-            passed = value >= 5.0
-            in_violation = value < 5.0
-        else:
-            passed = not in_violation
+        passed = not in_violation
         expected_zone = "healthy"
 
     actual_zone = _zone_label(branch_type, in_violation)

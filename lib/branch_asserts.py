@@ -6,24 +6,25 @@ import os
 
 from lib.registry import iter_branches, metric_entry
 from lib.tool_assert import RUNNERS, tool_assert_branch, tool_family
-from lib.tool_map import pip_packages_for_family, python_tool
+from lib.tool_map import metric_tool, pip_packages_for_family
+from lib.lang_tool_runners import packages_for_language
 from lib.validate import BranchValidationError, validate_branch
 
 
 def _check_tool_support(technique_code, metric_code, branch_path, language="python"):
-    info = python_tool(technique_code, metric_code)
+    info = metric_tool(technique_code, metric_code, language)
     family = info["family"]
     primary = info["primary"]
     if family == "unknown":
         return "FAIL", "unknown tool family for primary %r" % primary
-    if family not in RUNNERS:
+    if (language or "python").lower() == "python" and family not in RUNNERS:
         return "FAIL", "no runner for family %s" % family
-    pkgs = pip_packages_for_family(family, primary)
-    return "PASS", "family=%s packages=%s" % (family, ",".join(pkgs))
+    pkgs = packages_for_language(family, primary, language) or pip_packages_for_family(family, primary)
+    return "PASS", "family=%s lang=%s packages=%s" % (family, language, ",".join(pkgs))
 
 
 def assert_branch_full(branch_path, technique_code=None, metric_code=None, branch_type=None,
-                       version="2.6", language="python", run_tool=True):
+                       version="2.6", language="python", run_tool=True, require_real_tool=False):
     """Run all three assert layers for one branch directory."""
     folder = os.path.basename(os.path.normpath(branch_path))
     from lib.metrics import parse_branch_name
@@ -58,10 +59,20 @@ def assert_branch_full(branch_path, technique_code=None, metric_code=None, branc
     metric_behavior = "SKIPPED"
     tr = None
     if run_tool and structure == "PASS":
-        tr = tool_assert_branch(branch_path, technique_code, metric_code, branch_type, language)
+        tr = tool_assert_branch(
+            branch_path,
+            technique_code,
+            metric_code,
+            branch_type,
+            language,
+            require_real_tool=require_real_tool,
+        )
         actual = str(tr.get("actual_outcome", "")).upper()
         strength_pass = tr.get("strength_pass", False)
-        if tr.get("status") == "SKIPPED":
+        real_tool = tr.get("real_tool", True)
+        if tr.get("status") == "UNAVAILABLE" or (require_real_tool and not real_tool):
+            metric_behavior = "FAIL"
+        elif tr.get("status") == "SKIPPED":
             metric_behavior = "SKIPPED"
         elif strength_pass and tr.get("status") == "PASS":
             metric_behavior = "PASS"
@@ -77,6 +88,8 @@ def assert_branch_full(branch_path, technique_code=None, metric_code=None, branc
                 tr.get("actual_outcome"),
             )
         )
+        if require_real_tool:
+            messages.append("real_tool=%s" % real_tool)
         if tr.get("strength_reason"):
             messages.append("strength: %s" % tr.get("strength_reason"))
 

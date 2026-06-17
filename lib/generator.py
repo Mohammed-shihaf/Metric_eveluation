@@ -32,11 +32,8 @@ def write_branch(root, technique_code, metric_code, branch_type, version="2.6", 
     technique_code = technique_code.upper()
     metric_code = metric_code.upper()
     version = sanitize_version(version)
-    if language != "python":
-        from lib.python_generator import write_branch as py_write
-        return py_write(root, technique_code, metric_code, branch_type, version, language)
-    from lib.python_generator import write_branch as py_write
-    return py_write(root, technique_code, metric_code, branch_type, version, language)
+    from lib.lang_generators import write_branch as lang_write
+    return lang_write(root, technique_code, metric_code, branch_type, version, language)
 
 
 def generate_branches(

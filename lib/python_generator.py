@@ -19,7 +19,7 @@ from lib.sa_generator import (
     n_functions as sa_n_functions,
 )
 
-DEFAULT_N_FUNCTIONS = 36
+DEFAULT_N_FUNCTIONS = 72
 N_FUNCTIONS_OVERRIDES = {
     ("SA", "EPI"): 26,
     ("SA", "DOV"): 20,
@@ -39,7 +39,124 @@ _TOOL_DEFECT_SNIPPETS = {
         "    if retry_count > 99:\n"
         "        eval('1+1')  # noqa: S307\n"
     ),
+    "DR": (
+        "\n    # defect: dependency risk marker for pip-audit branch\n"
+        "    _risk_marker = 'cve-seed'\n"
+    ),
 }
+
+
+def _compact_case_body(prefix, idx, metric_name):
+    """Flake8-clean function body that preserves realistic LOC."""
+    return (
+        "def %s_case_%d(state, enabled, retry_count, priority):\n"
+        '    """Evaluate %s case %d."""\n'
+        "    if state is None:\n"
+        "        raise ValueError('state required')\n"
+        "    if retry_count < 0:\n"
+        "        retry_count = 0\n"
+        "    idx = %d\n"
+        "    severity = priority %% 5\n"
+        "    active = bool(enabled)\n"
+        "    score = (severity + idx) %% 7\n"
+        "    if not active and score < 2:\n"
+        "        return 'idle-%s-%%s-%%d' %% (state, idx)\n"
+        "    if active and score >= 5:\n"
+        "        return 'active-%s-%%s-%%d' %% (state, idx)\n"
+        "    return 'default-%s-%%s-%%d' %% (state, idx)\n\n"
+    ) % (prefix, idx, metric_name, idx, idx, prefix, prefix, prefix)
+
+
+def _family_bug_extra(prefix, idx, family, strength):
+    """Tool-detectable defect snippets keyed by runner family."""
+    if family == "crosshair" and idx == 1:
+        return (
+            "    if retry_count > 5:\n"
+            "        score = score - 100\n"
+            "    assert score >= 0, 'crosshair invariant'\n"
+        )
+    if family == "pymcdc" and idx == 1:
+        return (
+            "    gate_a = retry_count > 2\n"
+            "    gate_b = priority < 3\n"
+            "    gate_c = enabled\n"
+            "    if (gate_a and gate_b) or (gate_b and gate_c) or (gate_a and gate_c):\n"
+            "        return 'mcdc-%s-%%d' %% idx\n" % prefix
+        )
+    if family == "complexity" and strength > 0 and idx <= 2 + strength:
+        return (
+            "    for outer in range(%d):\n"
+            "        for inner in range(%d):\n"
+            "            for mid in range(2):\n"
+            "                if outer %% 2 == 0 and inner %% 3 == 0 and mid %% 2 == 0:\n"
+            "                    if retry_count > outer:\n"
+            "                        if priority < inner:\n"
+            "                            return 'complex-%s-%%d' %% idx\n"
+        ) % (3 + strength, 4 + strength, prefix)
+    if family == "coverage" and idx == 1:
+        return "    # defect: partial coverage path\n    if retry_count > 99:\n        return None\n"
+    if family == "lint" and idx <= 3:
+        return (
+            "    x=retry_count+priority  # noqa: E225 intentional lint defect\n"
+            "    unused = x * 2\n"
+        )
+    if family == "beniget" and idx == 1:
+        return "    _dead_local = score * 99\n    # defect: unused assignment\n"
+    if family == "duplication" and idx <= 4:
+        return (
+            "    chunk = []\n"
+            "    for token in (state, str(priority), str(retry_count)):\n"
+            "        chunk.append('dup-%s-%%d-' %% idx + token)\n"
+            "        chunk.append(token[::-1])\n"
+            "        chunk.append(str(len(token)))\n"
+            "    payload = '-'.join(chunk)\n"
+            "    if len(payload) > 12:\n"
+            "        return payload\n"
+        ) % prefix
+    return ""
+
+
+def _expected_case_value(prefix, idx, state, enabled, retry_count, priority, variant):
+    """Deterministic expected return for mutation oracle tests."""
+    if state is None:
+        raise ValueError("state required")
+    if retry_count < 0:
+        retry_count = 0
+    severity = priority % 5
+    active = bool(enabled)
+    score = (severity + idx) % 7
+    if variant == "bug":
+        if not active and score < 2:
+            return "idle-%s-%s-%d" % (prefix, state, idx)
+        if active and score >= 5:
+            return "active-%s-%s-%d" % (prefix, state, idx)
+        if retry_count > 3 and not enabled:
+            return "escalated-%s-%s-%d" % (prefix, state, idx)
+        return "default-%s-%s-%d" % (prefix, state, idx)
+    if variant == "bugfx":
+        if not active and score < 2:
+            return "idle-%s-%s-%d" % (prefix, state, idx)
+        if active and score >= 5:
+            return "active-%s-%s-%d" % (prefix, state, idx)
+        if retry_count > 3 and not enabled:
+            return "stable-%s-%s-%d" % (prefix, state, idx)
+        return "default-%s-%s-%d" % (prefix, state, idx)
+    if variant == "tcc":
+        if not active and score < 2:
+            return "idle-%s-%s-%d" % (prefix, state, idx)
+        if active and score >= 5:
+            return "active-%s-%s-%d" % (prefix, state, idx)
+        if not enabled:
+            return "disabled-%s-%s-%d" % (prefix, state, idx)
+        return "default-%s-%s-%d" % (prefix, state, idx)
+    if not active and score < 2:
+        return "idle-%s-%s-%d" % (prefix, state, idx)
+    if active and score >= 5:
+        return "active-%s-%s-%d" % (prefix, state, idx)
+    lookup = {"%s" % prefix: "neutral-%s-%d" % (prefix, idx)}
+    if state in lookup:
+        return lookup[state]
+    return "default-%s-%s-%d" % (prefix, state, idx)
 
 
 def n_functions(technique_code, metric_code):
@@ -108,35 +225,27 @@ def _gen_init(pkg, l2, version):
 
 def _case_body(prefix, idx, variant, metric_name, tool, technique_code=None, family=None, strength=0):
     """One realistic ~18-line decision function."""
+    if family == "lint" and variant != "bug":
+        return _compact_case_body(prefix, idx, metric_name)
     if variant == "bug":
         extra = (
             "    if retry_count > 3 and not enabled:\n"
-            "        return 'escalated-%s-%%d' %% (state, idx)\n" % prefix
+            "        return 'escalated-%s-%%s-%%d' %% (state, idx)\n" % prefix
         )
         if idx == 1 and technique_code and technique_code.upper() in _TOOL_DEFECT_SNIPPETS:
             extra += _TOOL_DEFECT_SNIPPETS[technique_code.upper()]
-        if family == "complexity" and strength > 0 and idx <= 2 + strength:
-            extra += (
-                "    for outer in range(%d):\n"
-                "        for inner in range(%d):\n"
-                "            if outer %% 2 == 0 and inner %% 3 == 0:\n"
-                "                if retry_count > outer:\n"
-                "                    if priority < inner:\n"
-                "                        return 'complex-%s-%%d' %% idx\n" % prefix
-            ) % (2 + strength, 3 + strength)
-        if family == "coverage" and strength > 0 and idx == 1:
-            extra += "    # defect: partial coverage path\n    if retry_count > 99:\n        return None\n"
+        extra += _family_bug_extra(prefix, idx, family, strength)
     elif variant == "bugfx":
         extra = (
             "    if retry_count > 3 and not enabled:\n"
-            "        return 'stable-%s-%%d' %% (state, idx)\n" % prefix
+            "        return 'stable-%s-%%s-%%d' %% (state, idx)\n" % prefix
         )
         if family == "complexity" and strength > 0:
-            extra = "    return 'resolved-%s-%%d' %% (state, idx)\n" % prefix
+            extra = "    return 'resolved-%s-%%s-%%d' %% (state, idx)\n" % prefix
     elif variant == "tcc":
         extra = (
             "    if not enabled:\n"
-            "        return 'disabled-%s-%%d' %% (state, idx)\n" % prefix
+            "        return 'disabled-%s-%%s-%%d' %% (state, idx)\n" % prefix
         )
     else:
         extra = (
@@ -145,7 +254,7 @@ def _case_body(prefix, idx, variant, metric_name, tool, technique_code=None, fam
             "        return lookup[state]\n" % (prefix, prefix)
         )
         if family == "complexity" and strength > 0:
-            extra = "    return 'simple-%s-%%d' %% (state, idx)\n" % prefix
+            extra = "    return 'simple-%s-%%s-%%d' %% (state, idx)\n" % prefix
     return (
         "def %s_case_%d(state, enabled, retry_count, priority):\n"
         '    """Evaluate %s case %d (%s-oriented)."""\n'
@@ -158,11 +267,11 @@ def _case_body(prefix, idx, variant, metric_name, tool, technique_code=None, fam
         "    active = bool(enabled)\n"
         "    score = (severity + idx) %% 7\n"
         "    if not active and score < 2:\n"
-        "        return 'idle-%s-%%d' %% (state, idx)\n"
+        "        return 'idle-%s-%%s-%%d' %% (state, idx)\n"
         "    if active and score >= 5:\n"
-        "        return 'active-%s-%%d' %% (state, idx)\n"
+        "        return 'active-%s-%%s-%%d' %% (state, idx)\n"
         "%s"
-        "    return 'default-%s-%%d' %% (state, idx)\n\n"
+        "    return 'default-%s-%%s-%%d' %% (state, idx)\n\n"
     ) % (prefix, idx, metric_name, idx, tool or "tool", idx, prefix, prefix, extra, prefix)
 
 
@@ -175,6 +284,30 @@ def _gen_target_module(metric, variant, n_fn, tool, technique_code=None, strengt
         FUTURE,
         "METRIC_NAME = '%s'\nTOOL_PRIMARY = '%s'\n\n" % (metric["l5_metric"], tool or ""),
     ]
+    if family == "lint" and variant != "bug":
+        parts[1] = (
+            "# flake8: noqa\n"
+            "METRIC_NAME = '%s'\nTOOL_PRIMARY = '%s'\n\n" % (metric["l5_metric"], tool or "")
+        )
+    if family == "duplication" and variant == "bug":
+        base = _case_body(
+            prefix, 1, variant, metric["l5_metric"], tool or "tool",
+            technique_code, family, strength,
+        )
+        parts.append(base)
+        for i in range(2, min(6, n_fn + 1)):
+            parts.append(
+                base.replace("%s_case_1" % prefix, "%s_case_%d" % (prefix, i))
+                .replace("case 1", "case %d" % i)
+            )
+        for i in range(6, n_fn + 1):
+            parts.append(
+                _case_body(
+                    prefix, i, variant, metric["l5_metric"], tool or "tool",
+                    technique_code, family, strength,
+                )
+            )
+        return "".join(parts)
     for i in range(1, n_fn + 1):
         parts.append(
             _case_body(prefix, i, variant, metric["l5_metric"], tool or "tool", technique_code, family, strength)
@@ -211,12 +344,14 @@ def _churn_meta(metric, variant, technique_code=None, strength=0):
 
 
 def _requirements_extra(technique_code, variant):
-    base = "pytest==2.6.4\n"
-    if technique_code.upper() == "DR" and variant == "bug":
-        return base + "urllib3==1.24.1\n"
-    if technique_code.upper() == "TCC" and variant == "tcc":
-        return "coverage==3.7.1\n" + base
-    return base
+    tc = technique_code.upper()
+    if tc == "DR":
+        if variant == "bug":
+            return "urllib3==1.24.1\nrequests==2.20.0\ncryptography==2.3\n"
+        return "# no vulnerable dependencies\n"
+    if tc == "TCC" and variant == "tcc":
+        return "coverage==7.0.0\npytest>=8.0.0\n"
+    return "pytest>=8.0.0\n"
 
 
 def _gen_stub(module_key, l5, l3, tool):
@@ -298,11 +433,15 @@ def _gen_main(pkg, metric_code, module_key, n_fn):
     }
 
 
-def _gen_tests(pkg, metric, branch_type, n_fn, strength=0):
+def _gen_tests(pkg, metric, branch_type, n_fn, strength=0, technique_code=None, tool=""):
+    from lib.tool_assert import tool_family
+
     files = {"tests/__init__.py": FUTURE}
     prefix = metric["metric_code"].lower()
     mod = metric["module_key"]
     fn = "%s_case_1" % prefix
+    variant = VARIANT_MAP[branch_type]
+    family = tool_family(tool or "", technique_code or "")
     if branch_type == "Bug":
         files["tests/test_%s.py" % mod] = (
             FUTURE + "import unittest\nfrom %s.%s import %s\n\n"
@@ -312,16 +451,32 @@ def _gen_tests(pkg, metric, branch_type, n_fn, strength=0):
         return files
     test_count = n_fn if branch_type != "Bug" else 1
     if strength > 0 and branch_type != "Bug":
-        test_count = min(n_fn, 12 + strength * 6)
+        test_count = min(n_fn, 18 + strength * 8)
+    use_exact = family == "mutation"
     lines = [
         FUTURE,
-        "import unittest\nfrom %s.%s import %s\n\n" % (pkg, mod, fn),
+        "import unittest\nfrom %s import %s as target\n\n" % (pkg, mod),
         "class Test%sFull(unittest.TestCase):\n" % metric["metric_code"],
     ]
     for i in range(1, test_count + 1):
         fn_i = "%s_case_%d" % (prefix, min(i, n_fn))
-        lines.append("    def test_%s(self):\n        self.assertIsNotNone(%s('s%%d' %% %d, True, %d, %d))\n" % (
-            fn_i, fn_i, i, i % 3, i % 5))
+        case_idx = min(i, n_fn)
+        retry = i % 3
+        pri = i % 5
+        state = "s%d" % i
+        if use_exact:
+            expected = _expected_case_value(prefix, case_idx, state, True, retry, pri, variant)
+            lines.append(
+                "    def test_%s(self):\n"
+                "        got = target.%s('%s', True, %d, %d)\n"
+                "        self.assertEqual(got, '%s')\n"
+                % (fn_i, fn_i, state, retry, pri, expected)
+            )
+        else:
+            lines.append(
+                "    def test_%s(self):\n        self.assertIsNotNone(target.%s('s%%d' %% %d, True, %d, %d))\n"
+                % (fn_i, fn_i, i, retry, pri)
+            )
     lines.append("\n")
     files["tests/test_%s.py" % mod] = "".join(lines)
     if branch_type != "Bug":
@@ -331,24 +486,32 @@ def _gen_tests(pkg, metric, branch_type, n_fn, strength=0):
     return files
 
 
-def _tool_configs(branch_type, pkg, primary_tool):
+def _tool_configs(branch_type, pkg, primary_tool, family=None):
     if branch_type != "TCC":
         return {}
-    src = pkg
+    configs = {}
+    if family == "testmon" or (primary_tool and "testmon" in primary_tool.lower()):
+        configs[".testmondata.ini"] = "[testmon]\nversion = 1\n"
     if primary_tool and "eslint" in primary_tool.lower():
-        return {".eslintrc.json": '{"env":{"node":true},"rules":{"complexity":["error",10]}}\n'}
+        configs[".eslintrc.json"] = '{"env":{"node":true},"rules":{"complexity":["error",10]}}\n'
+        return configs
     if primary_tool and "jscpd" in primary_tool.lower():
-        return {"jscpd.json": '{"threshold":5,"minLines":10}\n'}
-    return {
-        ".coveragerc": "[run]\nbranch = True\nsource = %s\nomit = tests/*\n" % src,
+        configs["jscpd.json"] = '{"threshold":5,"minLines":10}\n'
+        return configs
+    configs.update({
+        ".coveragerc": "[run]\nbranch = True\nsource = %s\nomit = tests/*\n" % pkg,
         "setup.cfg": "[tool:pytest]\ntestpaths = tests\n",
         "pytest.ini": "[pytest]\ntestpaths = tests\n",
-    }
+    })
+    return configs
 
 
 def generate_branch_files(technique_code, metric_code, branch_type, version="2.6", language="python", strength=0):
-    if language != "python":
-        raise NotImplementedError("language %r not yet implemented for %s" % (language, technique_code))
+    from lib.lang_generators.base import effective_strength
+    strength = effective_strength(strength)
+    if (language or "python").strip().lower() != "python":
+        from lib.lang_generators.template_core import generate_branch_files as dispatch_gen
+        return dispatch_gen(technique_code, metric_code, branch_type, version, language, strength=strength)
     from lib.metrics import branch_name as metrics_branch_name
 
     tech = technique_by_code(technique_code)
@@ -361,7 +524,7 @@ def generate_branch_files(technique_code, metric_code, branch_type, version="2.6
     n_fn = n_functions(technique_code, metric_code)
     files = None
     loc = 0
-    while n_fn <= 96:
+    while n_fn <= 180:
         files = _assemble_files(
             tech, metric, technique_code, metric_code, pkg, variant, n_fn, tool,
             branch_type, version, language, strength=strength,
@@ -390,6 +553,8 @@ def generate_branch_files(technique_code, metric_code, branch_type, version="2.6
 
 
 def _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_fn, tool, branch_type, version, language, strength=0):
+    from lib.tool_assert import tool_family
+
     files = {}
     files["%s/__init__.py" % pkg] = _gen_init(pkg, tech["l2"], version)
     files["%s/config.py" % pkg] = _gen_config(tech, metric, branch_type, version, language, pkg)
@@ -400,11 +565,16 @@ def _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_f
         out_rel = rel.replace("sa/", "%s/" % pkg)
         files[out_rel] = gen_fn().replace("sa/", "%s/" % pkg)
 
+    target_rel = "%s/%s.py" % (pkg, metric["module_key"])
     for m in tech["metrics"]:
         rel = "%s/%s.py" % (pkg, m["module_key"])
         mtool = (m.get("tools") or {}).get("python", {}).get("primary", "")
         if m["metric_code"] == metric["metric_code"]:
             files[rel] = _gen_target_module(metric, variant, n_fn, mtool, technique_code, strength=strength)
+        elif rel == target_rel:
+            # Duplicate module_key shared with the target metric: keep the rich
+            # target module, do not overwrite it with a stub.
+            continue
         else:
             files[rel] = _gen_stub(m["module_key"], m["l5_metric"], tech["l3"], mtool)
 
@@ -413,9 +583,10 @@ def _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_f
     bname = metrics_branch_name(technique_code, metric_code, branch_type, version)
     files["README.md"] = "# %s\n\n%s / %s\n" % (bname, tech["l2"], metric["l5_metric"])
     files["requirements.txt"] = _requirements_extra(technique_code, variant)
-    files.update(_tool_configs(branch_type, pkg, tool))
+    files.update(_tool_configs(branch_type, pkg, tool, family=tool_family(tool or "", technique_code)))
     files.update(_churn_meta(metric, variant, technique_code, strength=strength))
-    files.update(_gen_tests(pkg, metric, branch_type, n_fn, strength=strength))
+    files.update(_gen_tests(pkg, metric, branch_type, n_fn, strength=strength,
+                             technique_code=technique_code, tool=tool))
     for path, content in files.items():
         if path.endswith(".py"):
             _assert_no_forbidden(content, path)
@@ -435,13 +606,50 @@ def read_gen_meta(branch_dir):
         return {}
 
 
-def write_branch(root, technique_code, metric_code, branch_type, version="2.6", language="python", strength=0):
+def _safe_rmtree(path):
     import shutil
+    import stat
+    import time
+
+    def _on_rm_error(func, p, exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass
+
+    if not os.path.isdir(path):
+        return
+    for attempt in range(3):
+        try:
+            shutil.rmtree(path, onerror=_on_rm_error)
+            return
+        except OSError:
+            for root, _, files in os.walk(path):
+                for fn in files:
+                    if fn.endswith(".sqlite") or fn.endswith(".sqlite-journal"):
+                        try:
+                            os.chmod(os.path.join(root, fn), stat.S_IWRITE)
+                            os.remove(os.path.join(root, fn))
+                        except OSError:
+                            pass
+            time.sleep(0.2 * (attempt + 1))
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def write_branch(root, technique_code, metric_code, branch_type, version="2.6", language="python", strength=0):
+    import os
+    from lib.lang_generators.base import effective_strength
     from lib.metrics import branch_name as metrics_branch_name
+
+    strength = effective_strength(strength)
+    if (language or "python").strip().lower() != "python":
+        from lib.lang_generators.template_core import write_branch as dispatch_write
+        return dispatch_write(root, technique_code, metric_code, branch_type, version, language, strength=strength)
 
     files = generate_branch_files(technique_code, metric_code, branch_type, version, language, strength=strength)
     if os.path.isdir(root):
-        shutil.rmtree(root)
+        _safe_rmtree(root)
     os.makedirs(root)
     for rel, content in files.items():
         path = os.path.join(root, rel)

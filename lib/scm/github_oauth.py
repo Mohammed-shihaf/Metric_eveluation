@@ -73,6 +73,7 @@ def build_authorization_url(
     state,
     scopes=None,
     login_hint=None,
+    account_picker=False,
 ):
     resolved_scopes = list(scopes) if scopes is not None else default_scopes()
     params = {
@@ -84,8 +85,10 @@ def build_authorization_url(
     if resolved_scopes:
         params["scope"] = " ".join(resolved_scopes)
     hint = _sanitize_github_login_hint(login_hint)
-    if hint:
+    if hint and not account_picker:
         params["login"] = hint
+    if account_picker:
+        params["prompt"] = "select_account"
     return "%s?%s" % (_GITHUB_AUTH_URL, urlencode(params))
 
 

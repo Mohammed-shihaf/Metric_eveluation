@@ -1,4 +1,4 @@
-"""Throwaway virtual-environment sessions for isolated local tool runs."""
+"""Throwaway and persistent virtual-environment sessions for local tool runs."""
 
 from __future__ import print_function
 
@@ -40,37 +40,32 @@ def create_session(workdir=None):
         "python_exe": python_exe,
         "scripts_dir": scripts_dir,
         "env": env,
+        "persistent": False,
     }
 
 
-def install_packages(session, packages, timeout=600):
-    """Install pip packages into the session venv. Returns (ok, log)."""
-    pkgs = list(dict.fromkeys(list(packages or []) + ["pyyaml"]))
-    if "pytest" in " ".join(pkgs).lower() and not any("pytest>=" in p for p in pkgs):
-        # ensure modern pytest when coverage family needs it
-        if "pytest" in pkgs:
-            pkgs = [p if p != "pytest" else "pytest>=7.0.0" for p in pkgs]
-    cmd = [session["python_exe"], "-m", "pip", "install", "--quiet"] + pkgs
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            env=session.get("env"),
-        )
-        log = (proc.stdout or "") + (proc.stderr or "")
-        if proc.returncode != 0:
-            return False, log.strip() or "pip install failed (exit %d)" % proc.returncode
-        return True, "installed: %s" % ", ".join(pkgs)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, str(exc)
+def install_packages(session, packages, timeout=600, retries=1):
+    """Install pip packages into the session venv.
+
+    Returns a structured dict:
+      {ok, installed, skipped, failed, logs, message}
+    """
+    from lib.tool_env import install_packages_strict
+
+    return install_packages_strict(session, packages, timeout=timeout, retries=retries)
+
+
+def install_packages_legacy(session, packages, timeout=600):
+    """Backward-compatible wrapper returning (ok, message)."""
+    result = install_packages(session, packages, timeout=timeout)
+    return result.get("ok", False), result.get("message", "")
 
 
 def destroy_session(session):
     """Remove the venv directory and all installed tools."""
     if not session:
+        return
+    if session.get("persistent"):
         return
     venv_dir = session.get("venv_dir")
     if venv_dir and os.path.isdir(venv_dir):
