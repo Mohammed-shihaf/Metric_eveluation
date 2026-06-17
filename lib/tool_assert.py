@@ -986,8 +986,10 @@ def _runner_mutation(ctx, root):
         existing = _parse_cosmic_ray_ratio(root)
         if existing is not None:
             killed, total, ratio = existing
-            combined = "cosmic-ray reused session killed=%d total=%d ratio=%.3f" % (killed, total, ratio)
-            return _mutation_result(ratio, "cosmic-ray", combined, "cosmic-ray session reused")
+            reuse_ok = branch_type == "Bug" or ratio >= MUTATION_RATIO_FAIL
+            if reuse_ok:
+                combined = "cosmic-ray reused session killed=%d total=%d ratio=%.3f" % (killed, total, ratio)
+                return _mutation_result(ratio, "cosmic-ray", combined, "cosmic-ray session reused")
         ratio, combined = _run_cosmic_ray_mutation(root, target_rel)
         if ratio is not None:
             return _mutation_result(ratio, "cosmic-ray", combined, "cosmic-ray exec complete")
