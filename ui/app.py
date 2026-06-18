@@ -2,8 +2,10 @@
 
 from __future__ import print_function
 
+import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -19,6 +21,7 @@ from lib.branch_pipeline import (  # noqa: E402
     push_branches,
     remote_branch_strength,
     validate_branches,
+    validate_with_regeneration,
 )
 from lib.compare import summarize_comparisons  # noqa: E402
 from lib.credentials import audit_credentials  # noqa: E402
@@ -47,7 +50,6 @@ from lib.proofs import (  # noqa: E402
     collect_s3_proof,
     collect_sonar_batch,
     compare_readiness,
-    list_proof_branches,
     load_proof_bundle,
     whitebox_completion,
 )
@@ -55,6 +57,7 @@ from lib.registry import load_registry  # noqa: E402
 from lib.repo_state import ensure_repo_aligned  # noqa: E402
 from lib.sa_qa import load_env, run_taxonomy_batch, verify_login  # noqa: E402
 from lib.tool_map import python_tool  # noqa: E402
+from lib.tool_doctor import load_capability_matrix, run_tool_doctor  # noqa: E402
 from lib.sonar_runner import sonar_server_status  # noqa: E402
 from lib.ui_run_panel import RunPanel  # noqa: E402
 
@@ -85,6 +88,133 @@ def _skip_detail(report):
         return ""
     extra = report.get("extra") or {}
     return extra.get("skip_reason") or report.get("raw_summary") or report.get("message", "")
+
+
+def _streamlit_key(prefix, branch_name):
+    safe = branch_name.replace(" ", "_").replace(".", "_").replace("-", "_")
+    return "%s_%s" % (prefix, safe)
+
+
+def _report_path(bundle, report_key, filename):
+    report = (bundle or {}).get(report_key) or {}
+    path = report.get("_path")
+    if path:
+        return path
+    proof_dir = (bundle or {}).get("proof_dir")
+    if proof_dir:
+        return str(Path(proof_dir) / filename)
+    return ""
+
+
+def _report_download(col, label, path, download_name, key):
+    if path and Path(path).is_file():
+        col.download_button(
+            label,
+            data=Path(path).read_bytes(),
+            file_name=download_name,
+            mime="application/json",
+            key=key,
+        )
+    else:
+        col.caption("pending")
+
+
+def _diff_rows(diffs):
+    rows = []
+    for diff in diffs or []:
+        row = {
+            "field": diff.get("field", ""),
+            "match": diff.get("match"),
+        }
+        if "delta" in diff:
+            row["delta"] = diff["delta"]
+        for key, value in diff.items():
+            if key in ("field", "match", "delta"):
+                continue
+            row[key] = value
+        rows.append(row)
+    return rows
+
+
+def _render_pair_diffs(title, pair):
+    if not pair:
+        st.caption("%s: not available" % title)
+        return
+    st.markdown("**%s** — `%s`" % (title, pair.get("verdict", "?")))
+    if pair.get("summary"):
+        st.caption(pair["summary"])
+    field_diffs = _diff_rows(pair.get("field_diffs"))
+    if field_diffs:
+        st.markdown("*Field diffs*")
+        st.dataframe(field_diffs, width="stretch")
+    metric_diffs = _diff_rows(pair.get("metric_diffs"))
+    if metric_diffs:
+        st.markdown("*Metric diffs*")
+        st.dataframe(metric_diffs, width="stretch")
+
+
+def _render_detailed_comparison(comparison):
+    if not comparison:
+        st.info("No comparison data.")
+        return
+    st.markdown("**Overall verdict:** `%s`" % comparison.get("verdict", "UNKNOWN"))
+    if comparison.get("summary"):
+        st.caption(comparison["summary"])
+    st.dataframe(
+        [{
+            "taxonomy": comparison.get("taxonomy_status", "—"),
+            "s3": comparison.get("s3_status", "—"),
+            "local": comparison.get("local_status", "—"),
+            "sonar": comparison.get("sonar_status", "—"),
+        }],
+        width="stretch",
+    )
+    _render_pair_diffs("S3 vs Local", comparison.get("s3_vs_local"))
+    _render_pair_diffs("Local vs SonarQube", comparison.get("local_vs_sonar"))
+
+
+def _load_branch_comparison(bname, bundle, readiness_row):
+    if bundle and bundle.get("comparison"):
+        return bundle["comparison"]
+    proof_dir = (bundle or {}).get("proof_dir")
+    if proof_dir:
+        comp_path = Path(proof_dir) / "comparison.json"
+        if comp_path.is_file():
+            return json.loads(comp_path.read_text(encoding="utf-8"))
+    if readiness_row.get("s3") and readiness_row.get("local"):
+        try:
+            return collect_comparison_proof(bname, root=str(ROOT))
+        except Exception as exc:
+            return {
+                "branch_name": bname,
+                "verdict": "ERROR",
+                "summary": str(exc),
+            }
+    return None
+
+
+def _comparison_results_for_branches(completed):
+    results = []
+    cached = st.session_state.get("last_comparisons") or []
+    cached_by = {
+        row.get("branch_name"): row
+        for row in cached
+        if row.get("branch_name")
+    }
+    for bname in completed:
+        if bname in cached_by:
+            results.append(cached_by[bname])
+            continue
+        bundle = load_proof_bundle(bname, root=str(ROOT)) or {}
+        if bundle.get("comparison"):
+            results.append(bundle["comparison"])
+            continue
+        proof_dir = bundle.get("proof_dir")
+        if proof_dir:
+            comp_path = Path(proof_dir) / "comparison.json"
+            if comp_path.is_file():
+                results.append(json.loads(comp_path.read_text(encoding="utf-8")))
+    return results
 
 
 def _branches_on_github(branch_names):
@@ -245,10 +375,14 @@ def _oauth_connection(app_user=None):
 
 
 
-def _build_oauth_authorize_url(app_user, login_hint=None):
+def _build_oauth_authorize_url(app_user, login_hint=None, account_picker=False):
     """Create OAuth state and authorization URL — mirrors POST /v1/scm/github/connect."""
     state = create_oauth_state(app_user, login_hint=login_hint)
-    init = _oauth_service().initiate_connection(state, login_hint=login_hint)
+    init = _oauth_service().initiate_connection(
+        state,
+        login_hint=login_hint,
+        account_picker=account_picker,
+    )
     return init.authorization_url
 
 
@@ -525,6 +659,19 @@ def _github_connected_status():
             or "GitHub App is authorized but cannot write to this repository yet.",
         )
 
+    app_user = _app_user_email()
+    if app_user:
+        try:
+            switch_url = _build_oauth_authorize_url(app_user, account_picker=True)
+            st.link_button(
+                "Switch GitHub account",
+                switch_url,
+                width="stretch",
+                key="github_switch_connected",
+            )
+        except Exception:
+            pass
+
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("View repositories", width="stretch"):
@@ -544,7 +691,7 @@ def _github_connected_status():
                 "github_login_ok", "github_login_msg", "github_repo_url",
                 "github_default_branch", "github_push_method", "github_oauth_url_cache",
                 "github_needs_install", "github_access_detail", "scm_view", "scm_callback",
-                "scm_discovered_repos", "scm_discovery_error",
+                "scm_discovered_repos", "scm_discovery_error", "scm_login_hint",
             ):
                 st.session_state.pop(key, None)
             st.session_state.pop("push_status_cache", None)
@@ -818,13 +965,24 @@ def _github_connect_oauth():
         return
 
     if st.session_state.get("github_login_ok"):
+        app_user = _app_user_email()
         if not st.session_state.get("github_repo_slug"):
             st.info("GitHub is connected. Select a repository to enable branch push.")
             if st.button("View my repositories", type="primary", width="stretch"):
                 st.session_state["scm_view"] = "repos"
                 st.rerun()
+            if app_user:
+                try:
+                    switch_url = _build_oauth_authorize_url(app_user, account_picker=True)
+                    st.link_button(
+                        "Switch GitHub account",
+                        switch_url,
+                        width="stretch",
+                        key="github_switch_partial",
+                    )
+                except Exception as exc:
+                    st.caption("Could not build account switch link: %s" % exc)
             if st.button("Disconnect GitHub", width="stretch"):
-                app_user = _app_user_email()
                 if app_user:
                     revoke_connection(app_user)
                 for key in list(st.session_state.keys()):
@@ -864,14 +1022,29 @@ def _github_connect_oauth():
     )
     login_hint = st.text_input(
         "GitHub username (optional)",
-        placeholder="Mohammed-shihaf",
-        help="Pre-selects the GitHub account on the authorize page when multiple sessions exist.",
+        placeholder="Leave blank to pick at sign-in",
+        help="Only fill this to pre-select a specific GitHub account. "
+        "Leave blank and use **Switch GitHub account** to authorize a different user.",
         key="scm_login_hint",
     )
+    hint = (login_hint or "").strip()
     try:
-        authorize_url = _ensure_oauth_authorize_url(app_user, login_hint=login_hint)
+        if hint:
+            authorize_url = _ensure_oauth_authorize_url(app_user, login_hint=hint)
+        else:
+            authorize_url = _build_oauth_authorize_url(app_user, login_hint=None)
         st.link_button("Connect GitHub", authorize_url, type="primary", width="stretch")
-        st.caption("Opens GitHub to authorize — you will return here automatically.")
+        switch_url = _build_oauth_authorize_url(app_user, account_picker=True)
+        st.link_button(
+            "Switch GitHub account",
+            switch_url,
+            width="stretch",
+            key="github_switch_connect",
+        )
+        st.caption(
+            "Opens GitHub to authorize — you will return here automatically. "
+            "Use **Switch GitHub account** if you need a different GitHub user than the one shown."
+        )
     except Exception as exc:
         st.error("Could not start GitHub OAuth: %s" % exc)
 
@@ -988,6 +1161,16 @@ def _branch_push_status(branches, force_refresh=False):
     return rows, all_pushed
 
 
+def _pipeline_scope_key(filters):
+    """Stable key for sidebar selection — reset pipeline rows when this changes."""
+    return (
+        filters["techniques"],
+        filters["metrics"],
+        tuple(filters["types"]),
+        filters["version"],
+    )
+
+
 def _tab_branches(filters):
     st.header("1 — Generate branches")
     total = filters["summary"]["branch_count"]
@@ -1026,8 +1209,8 @@ def _tab_branches(filters):
         )
         if using_pat:
             st.info(
-                "Sign in via the sidebar **Account** panel, then connect GitHub OAuth so pushes "
-                "use your own GitHub identity (not the shared server PAT)."
+                "Push uses the shared PAT from `.env.local`. Sign in via sidebar **Account** "
+                "and connect GitHub OAuth if you want pushes under your own GitHub identity."
             )
         if needs_install:
             _github_install_prompt(
@@ -1059,6 +1242,13 @@ def _tab_branches(filters):
     )
 
     work_root = pipeline_work_dir(str(ROOT), app_user=_app_user_email())
+
+    scope_key = _pipeline_scope_key(filters)
+    if st.session_state.get("_pipeline_scope_key") != scope_key:
+        st.session_state["_pipeline_scope_key"] = scope_key
+        st.session_state.pop("gen_rows", None)
+        st.session_state.pop("validate_rows", None)
+        st.session_state.pop("validate_ok", None)
 
     if not st.session_state.get("gen_rows"):
         hydrated = hydrate_gen_rows_from_work(
@@ -1099,6 +1289,25 @@ def _tab_branches(filters):
 
     pat_fallback = _github_pat_config()
     can_push = all_validated and bool(_github_push_config() or pat_fallback)
+
+    # Generate: local write + target repo (GitHub). QA sign-in is for Whitebox, not this step.
+    can_generate = total > 0 and github_ready
+    can_validate = n_generated > 0 and total > 0
+
+    gate_hints = []
+    if total == 0:
+        gate_hints.append("Select at least one technique, metric, and branch type in the sidebar.")
+    elif not github_ready:
+        gate_hints.append("Connect GitHub and select a repository above to enable **Generate**.")
+    if not can_validate and can_generate:
+        gate_hints.append("Run **Generate** to enable **Validate**.")
+    elif not can_validate and n_generated < total and n_generated > 0:
+        gate_hints.append("Some branches missing locally — re-run **Generate**.")
+    if not can_push and all_validated is False and validate_rows and not validate_ok:
+        gate_hints.append("Fix validation failures, then **Push** unlocks.")
+    elif not can_push and all_validated and needs_install and not pat_fallback:
+        gate_hints.append("Install the GitHub App on your repo to enable **Push**.")
+
     if not all_validated:
         if not n_generated:
             push_hint = "Run **Generate** first."
@@ -1138,7 +1347,9 @@ def _tab_branches(filters):
             })
         st.dataframe(repo_status_display, width="stretch")
         st.caption(
-            "Branches already in **%s** will be regenerated with higher strength (more code) on **Generate**."
+            "Branches already in **%s** will be regenerated with higher strength (more code) on **Generate**. "
+            "**gen strength** in the table is the write level (0=new, 2+ = escalated from remote). "
+            "Run **Validate** to execute tools — that step takes longer than Generate."
             % (repo_slug or "your repo")
         )
 
@@ -1148,14 +1359,14 @@ def _tab_branches(filters):
             "1 — Generate branches",
             type="primary",
             width="stretch",
-            disabled=total == 0,
+            disabled=not can_generate,
         )
     with btn_val:
         run_validate = st.button(
             "2 — Validate branches",
             type="primary",
             width="stretch",
-            disabled=n_generated == 0,
+            disabled=not can_validate,
         )
     with btn_push:
         run_push = st.button(
@@ -1164,6 +1375,9 @@ def _tab_branches(filters):
             width="stretch",
             disabled=not can_push or (needs_install and not pat_fallback),
         )
+
+    if gate_hints:
+        st.caption(" ".join(gate_hints))
 
     def _rows_have_asserts(rows):
         for r in rows or []:
@@ -1195,7 +1409,7 @@ def _tab_branches(filters):
                     "branch": r.get("branch_name"),
                     "type": r.get("branch_type"),
                     "generated": "yes" if r.get("generated") else "no",
-                    "strength": r.get("strength"),
+                    "gen strength": r.get("strength"),
                     "loc": r.get("loc"),
                     "dir": r.get("dir") or "",
                 }
@@ -1261,12 +1475,13 @@ def _tab_branches(filters):
         n_to_validate = len([r for r in gen_rows if r.get("generated") and r.get("dir")])
         with RunPanel("Validating %d branches (strength asserts)" % n_to_validate) as panel:
             with panel.stdout_redirect():
-                val_result = validate_branches(
+                val_result = validate_with_regeneration(
                     gen_rows,
                     filters["version"],
                     filters["language"],
                     max_fix_attempts=int(max_fix_attempts),
                     auto_install=auto_install,
+                    max_rounds=25,
                     progress_callback=panel.progress,
                     block_strict=True,
                 )
@@ -1608,38 +1823,116 @@ def _tab_whitebox(filters):
 def _tab_local_tools(filters):
     st.header("3 — Local tool execution")
     branches = filters["summary"]["branches"]
-    if not _github_creds_ready():
-        st.info("Connect GitHub on the Branches tab before running local tools.")
-        return
-    on_github = _branches_on_github(branches)
-    if not on_github:
-        st.info("No in-scope branches on GitHub yet. Generate and push branches first.")
+    work_root = pipeline_work_dir(str(ROOT), _scm_app_user())
+    on_github = _branches_on_github(branches) if _github_creds_ready() else []
+    local_ready = [b for b in branches if os.path.isdir(os.path.join(work_root, b))]
+    available = list(dict.fromkeys(local_ready + on_github))
+    if not available:
+        if not _github_creds_ready():
+            st.info(
+                "Connect GitHub on the Branches tab, or generate branches first so copies exist under "
+                "`%s`." % work_root
+            )
+        else:
+            st.info("No in-scope branches locally or on GitHub yet. Generate branches first.")
         return
 
-    default_pick = st.session_state.get("last_whitebox_branches", on_github)
-    default_pick = [b for b in default_pick if b in on_github] or on_github
+    default_pick = st.session_state.get("last_whitebox_branches", available)
+    default_pick = [b for b in default_pick if b in available] or available
 
     st.caption(
-        "Fetches each branch from GitHub into a temp dir, runs the metric's primary tool, "
-        "saves reports, then deletes the temp copy."
+        "Uses a **persistent pre-validated tool environment** (`.tool_env/`) when isolated mode is on. "
+        "Runs each metric's **registry primary tool** against your branch copy (prefers locally generated files under "
+        "`%s`, falls back to GitHub only when missing), and saves a separate report per branch under `proofs/`."
+        % os.path.basename(work_root)
     )
+
+    with st.expander("Tool environment (capability matrix)", expanded=False):
+        cap = load_capability_matrix()
+        if cap:
+            st.caption("Env key: `%s` | all runnable: **%s**" % (cap.get("env_key", "?"), cap.get("all_runnable")))
+            fam_rows = []
+            for family, info in sorted((cap.get("families") or {}).items()):
+                fam_rows.append({
+                    "family": family,
+                    "runnable": info.get("runnable"),
+                    "version": (info.get("version") or "")[:80],
+                    "error": (info.get("error") or "")[:120],
+                })
+            if fam_rows:
+                st.dataframe(fam_rows, width="stretch")
+        else:
+            st.info("No capability matrix yet. Click **Run tool doctor** to build/validate the environment.")
+        if st.button("Run tool doctor", key="run_tool_doctor"):
+            with st.spinner("Building tool environment and running smoke checks..."):
+                matrix = run_tool_doctor(persist=True)
+                if matrix.get("session"):
+                    matrix.pop("session", None)
+                st.session_state["tool_doctor_matrix"] = matrix
+            st.success("Tool doctor complete. Matrix saved to proofs/_doctor/capability.json")
+            st.rerun()
+        if st.session_state.get("tool_doctor_matrix"):
+            st.json(st.session_state["tool_doctor_matrix"])
+
+    sweep_report_path = ROOT / "proofs" / "_diagnostics" / "sweep_report.json"
+    with st.expander("Branch-generation diagnostics (sweep report)", expanded=False):
+        if sweep_report_path.is_file():
+            import json as _json
+
+            with open(sweep_report_path, encoding="utf-8") as fh:
+                sweep_data = _json.load(fh)
+            agg = sweep_data.get("aggregates") or {}
+            st.caption(
+                "Total **%d** | Correct **%d** (%.1f%%) — from `proofs/_diagnostics/sweep_report.json`"
+                % (agg.get("total", 0), agg.get("correct", 0), agg.get("correct_pct", 0))
+            )
+            cat_rows = [
+                {"category": k, "count": v}
+                for k, v in sorted((agg.get("by_category") or {}).items())
+            ]
+            if cat_rows:
+                st.dataframe(cat_rows, width="stretch")
+            hotspots = agg.get("hotspots") or {}
+            worst = (hotspots.get("techniques") or [])[:8]
+            if worst:
+                st.subheader("Worst techniques")
+                st.dataframe(
+                    [{"technique": h["key"], "issues": h["bad_count"], "breakdown": str(h["counts"])} for h in worst],
+                    width="stretch",
+                )
+            worst_metrics = (hotspots.get("metrics") or [])[:8]
+            if worst_metrics:
+                st.subheader("Worst metrics")
+                st.dataframe(
+                    [{"metric": h["key"], "issues": h["bad_count"], "breakdown": str(h["counts"])} for h in worst_metrics],
+                    width="stretch",
+                )
+            md_path = ROOT / "proofs" / "_diagnostics" / "sweep_summary.md"
+            if md_path.is_file():
+                st.caption("Summary: `%s`" % md_path)
+        else:
+            st.info(
+                "No sweep report yet. Run: `py -3 scripts/run_all_tools_sweep.py --resume --skip-existing` "
+                "to generate the full matrix, execute all tools, and build diagnostics."
+            )
+
     isolated_default = os.environ.get("LOCAL_TOOL_ISOLATED", "true").lower() in ("1", "true", "yes")
     run_isolated = st.checkbox(
-        "Run in isolated throwaway session (recommended)",
+        "Run in isolated session (persistent env by default)",
         value=isolated_default,
-        help="Creates a temporary virtual environment, installs tools there, runs all branches, "
-        "saves reports, then deletes the venv and installed tools.",
+        help="Uses a persistent validated venv under .tool_env/ (reused across runs). "
+        "Uncheck to run tools in the current Python environment without worker isolation.",
     )
-    preview = _local_tool_preview(on_github)
+    preview = _local_tool_preview(available)
     if preview:
         st.subheader("Metric → tool mapping (in scope)")
         st.dataframe(preview, width="stretch")
 
     selected = st.multiselect(
         "Branches to run locally",
-        on_github,
+        available,
         default=default_pick,
-        help="Defaults to in-scope branches pushed to GitHub.",
+        help="Prefers locally generated copies; GitHub is used only when a local copy is missing.",
     )
     if not selected:
         st.warning("Select at least one branch.")
@@ -1658,7 +1951,8 @@ def _tab_local_tools(filters):
                     progress_callback=panel.progress,
                     require_whitebox=False,
                     isolated=run_isolated,
-                    github_config=_github_push_config(),
+                    github_config=_github_push_config() if _github_creds_ready() else None,
+                    local_root=work_root,
                 )
             st.session_state["last_local_run"] = results
             st.session_state["last_local_log"] = panel.log_lines
@@ -1666,22 +1960,48 @@ def _tab_local_tools(filters):
                 [{
                     "branch": r["branch_name"],
                     "status": r.get("status"),
-                    "tool": r.get("tool", ""),
+                    "primary_tool": r.get("tool", ""),
+                    "executed_tool": r.get("executed_tool", ""),
+                    "real_tool": r.get("real_tool"),
                     "local_status": (r.get("local_report") or {}).get("status"),
-                    "skip_reason": r.get("skip_reason") or r.get("error", ""),
                     "summary": (r.get("local_report") or {}).get("raw_summary", ""),
+                    "install_failed": ", ".join(r.get("install_failed") or []),
+                    "report": r.get("report_path") or (r.get("local_report") or {}).get("_path") or "",
                 } for r in results],
                 width="stretch",
             )
             for r in results:
-                log = r.get("tool_log") or ""
+                log = r.get("tool_log") or r.get("tool_stderr") or ""
                 install_msg = r.get("install_msg") or ""
-                if log or install_msg:
-                    with st.expander("Logs — %s" % r["branch_name"]):
+                report_path = r.get("report_path") or ""
+                local_report = r.get("local_report") or {}
+                status = r.get("status", "")
+                if status in ("ERROR", "UNAVAILABLE") or r.get("real_tool") is False:
+                    st.error(
+                        "%s — %s (executed: %s, real: %s)"
+                        % (r["branch_name"], status, r.get("executed_tool") or "none", r.get("real_tool"))
+                    )
+                    stderr = r.get("tool_stderr") or ""
+                    if stderr:
+                        st.code(stderr[:2000], language=None)
+                elif status == "FAIL":
+                    st.warning(
+                        "%s — FAIL metric threshold (executed: %s, real: %s)"
+                        % (r["branch_name"], r.get("executed_tool") or "none", r.get("real_tool"))
+                    )
+                if log or install_msg or report_path:
+                    with st.expander("Report — %s" % r["branch_name"]):
                         if install_msg:
                             st.caption("Install: %s" % install_msg)
+                        if r.get("install_failed"):
+                            st.caption("Install failed: %s" % ", ".join(r.get("install_failed")))
+                        if report_path:
+                            st.caption("Stored: `%s`" % report_path)
+                        if local_report:
+                            st.json(local_report)
                         if log:
                             st.code(log, language=None)
+            panel.set_result("complete", "complete")
         st.toast("Local tool run finished", icon="✅")
 
     if st.session_state.get("last_local_run"):
@@ -1845,46 +2165,86 @@ def _tab_comparison(filters):
             )
         st.toast("Comparison done", icon="✅")
 
-    proof_rows = list_proof_branches(str(ROOT))
-    if proof_rows:
-        st.dataframe(proof_rows, width="stretch")
+    st.subheader("Reports & comparison")
+    h1, h2, h3, h4, h5 = st.columns([3, 2, 2, 2, 3])
+    h1.markdown("**Branch**")
+    h2.markdown("**S3 report**")
+    h3.markdown("**Local report**")
+    h4.markdown("**SonarQube**")
+    h5.markdown("**Compare**")
 
-    picks = completed
-    if picks:
-        branch_pick = st.selectbox("Inspect branch", picks)
-        bundle = load_proof_bundle(branch_pick, root=str(ROOT))
-        if bundle:
-            t1, t2, t3, t4, t5 = st.tabs(["Taxonomy", "S3", "Local", "Sonar", "Comparison"])
-            tax = bundle.get("taxonomy_report")
-            s3 = bundle.get("s3_report")
-            local = bundle.get("local_report")
-            sonar = bundle.get("sonar_report")
-            with t1:
-                if tax and tax.get("status") == "SKIPPED":
-                    st.warning("SKIPPED: %s" % _skip_detail(tax))
-                st.json(tax or {"message": "taxonomy_report.json not found"})
-            with t2:
-                if s3 and s3.get("status") == "SKIPPED":
-                    st.warning("SKIPPED: %s" % _skip_detail(s3))
-                st.json(s3 or {"message": "s3_report.json not found"})
-            with t3:
-                if local and local.get("status") == "SKIPPED":
-                    st.warning("SKIPPED: %s" % _skip_detail(local))
-                extra = (local or {}).get("extra") or {}
-                if extra.get("tool_log"):
-                    with st.expander("Tool log"):
-                        st.code(extra["tool_log"], language=None)
-                st.json(local or {"message": "local_report.json not found — run Page 3"})
-            with t4:
-                if sonar and sonar.get("status") == "SKIPPED":
-                    st.warning("SKIPPED: %s" % _skip_detail(sonar))
-                extra = (sonar or {}).get("extra") or {}
-                if extra.get("tool_log"):
-                    with st.expander("Scanner log"):
-                        st.code(extra["tool_log"], language=None)
-                st.json(sonar or {"message": "sonar_report.json not found — run Page 4"})
-            with t5:
-                st.json(bundle.get("comparison") or {"message": "comparison.json not found — run comparison"})
+    readiness_by = {row["branch_name"]: row for row in readiness}
+    for bname in completed:
+        bundle = load_proof_bundle(bname, root=str(ROOT)) or {}
+        row = readiness_by.get(bname, {})
+        c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 3])
+        with c1:
+            st.write(bname)
+        safe = bname.replace("/", "_")
+        _report_download(
+            c2,
+            "Download S3",
+            _report_path(bundle, "s3_report", "s3_report.json"),
+            "%s_s3.json" % safe,
+            _streamlit_key("dl_s3", bname),
+        )
+        _report_download(
+            c3,
+            "Download local",
+            _report_path(bundle, "local_report", "local_report.json"),
+            "%s_local.json" % safe,
+            _streamlit_key("dl_local", bname),
+        )
+        sonar_path = _report_path(bundle, "sonar_report", "sonar_report.json")
+        if sonar_path and Path(sonar_path).is_file():
+            _report_download(
+                c4,
+                "Download SonarQube",
+                sonar_path,
+                "%s_sonar.json" % safe,
+                _streamlit_key("dl_sonar", bname),
+            )
+        else:
+            c4.caption("not run / Docker required")
+        with c5:
+            with st.expander("Compare"):
+                comparison = _load_branch_comparison(bname, bundle, row)
+                _render_detailed_comparison(comparison)
+                comp_path = _report_path(bundle, "comparison", "comparison.json")
+                if comp_path and Path(comp_path).is_file():
+                    st.download_button(
+                        "Download comparison JSON",
+                        data=Path(comp_path).read_bytes(),
+                        file_name="%s_comparison.json" % safe,
+                        mime="application/json",
+                        key=_streamlit_key("dl_cmp", bname),
+                    )
+
+    st.subheader("Overall comparison summary")
+    comparison_results = _comparison_results_for_branches(completed)
+    if not comparison_results:
+        st.info(
+            "No comparison results yet. Run comparison when all reports are ready, "
+            "or open a branch Compare expander to generate on demand."
+        )
+        return
+
+    summary = summarize_comparisons(comparison_results)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("MATCH", summary["match"])
+    m2.metric("PARTIAL", summary.get("partial", 0))
+    m3.metric("MISMATCH", summary["mismatch"])
+    m4.metric("INCOMPLETE", summary["incomplete"])
+    st.dataframe(
+        [{
+            "branch": row.get("branch_name", "?"),
+            "verdict": row.get("verdict", "?"),
+            "s3_vs_local": (row.get("s3_vs_local") or {}).get("verdict", "—"),
+            "local_vs_sonar": (row.get("local_vs_sonar") or {}).get("verdict", "—"),
+            "summary": row.get("summary", ""),
+        } for row in comparison_results],
+        width="stretch",
+    )
 
 
 def main():
