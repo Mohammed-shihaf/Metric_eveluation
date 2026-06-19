@@ -139,7 +139,9 @@ def _assert_generic(root, technique_code, metric_code, branch_type, version, lan
         assert any(os.path.isfile(os.path.join(root, n)) for n in TCC_CONFIG_FILES)
         assert test_count >= FULL_TEST_MIN.get(metric_code.upper(), 2)
     else:
-        assert "neutral-" in target_src or "OUTCOME_LOOKUP" in target_src
+        assert "neutral-" in target_src or "OUTCOME_LOOKUP" in target_src, (
+            "CC missing neutral-/OUTCOME_LOOKUP marker"
+        )
         assert "escalated-" not in target_src
         for name in TCC_CONFIG_FILES:
             assert not os.path.isfile(os.path.join(root, name))

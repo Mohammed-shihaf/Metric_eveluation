@@ -54,7 +54,7 @@ def _config_values(root, technique_code, language):
         path = os.path.join(root, pkg, "config.py")
         text = _read(path)
         out = {}
-        for key in ("BRANCH_TYPE", "TARGET_METRIC_ABBREV", "TARGET_TECHNIQUE", "PYTHON_VERSION", "LANGUAGE"):
+        for key in ("BRANCH_TYPE", "TARGET_METRIC_ABBREV", "TARGET_TECHNIQUE", "PYTHON_VERSION", "RUNTIME_VERSION", "LANGUAGE"):
             m = re.search(r"^%s\s*=\s*'([^']+)'" % key, text, re.M)
             if m:
                 out[key] = m.group(1)
@@ -63,7 +63,7 @@ def _config_values(root, technique_code, language):
         path = os.path.join(root, "src/main/java/com/testable/%s/Config.java" % pkg.lower())
         text = _read(path)
         out = {}
-        for key in ("BRANCH_TYPE", "TARGET_METRIC_ABBREV", "TARGET_TECHNIQUE", "PYTHON_VERSION", "LANGUAGE"):
+        for key in ("BRANCH_TYPE", "TARGET_METRIC_ABBREV", "TARGET_TECHNIQUE", "PYTHON_VERSION", "RUNTIME_VERSION", "LANGUAGE"):
             m = re.search(r'%s = "([^"]+)"' % key, text)
             if m:
                 out[key] = m.group(1)
@@ -73,7 +73,7 @@ def _config_values(root, technique_code, language):
         path = os.path.join(root, pkg.lower(), "config.%s" % ext)
         text = _read(path)
         out = {}
-        for key in ("BRANCH_TYPE", "TARGET_METRIC_ABBREV", "TARGET_TECHNIQUE", "PYTHON_VERSION", "LANGUAGE"):
+        for key in ("BRANCH_TYPE", "TARGET_METRIC_ABBREV", "TARGET_TECHNIQUE", "PYTHON_VERSION", "RUNTIME_VERSION", "LANGUAGE"):
             m = re.search(r"%s:\s*'([^']+)'" % key, text)
             if m:
                 out[key] = m.group(1)
@@ -181,7 +181,9 @@ def assert_branch_structure(root, technique_code, metric_code, branch_type, vers
         assert any(os.path.isfile(os.path.join(root, n)) for n in TCC_CONFIG_FILES)
         assert test_count >= FULL_TEST_MIN.get(metric_code.upper(), 2)
     else:
-        assert "neutral-" in target_src or "OUTCOME_LOOKUP" in target_src
+        assert "neutral-" in target_src or "OUTCOME_LOOKUP" in target_src, (
+            "CC missing neutral-/OUTCOME_LOOKUP marker"
+        )
         assert "escalated-" not in target_src
         for name in TCC_CONFIG_FILES:
             assert not os.path.isfile(os.path.join(root, name))

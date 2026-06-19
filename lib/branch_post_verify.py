@@ -42,6 +42,75 @@ def _syntax_check_python(branch_dir):
     return errors
 
 
+def _syntax_check_java(branch_dir):
+    if not shutil_which("mvn") or not os.path.isfile(os.path.join(branch_dir, "pom.xml")):
+        return []
+    try:
+        rc = subprocess.run(
+            ["mvn", "-q", "-f", os.path.join(branch_dir, "pom.xml"), "test-compile"],
+            cwd=branch_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if rc.returncode != 0:
+            detail = (rc.stderr or rc.stdout or "mvn test-compile failed").strip()[:200]
+            return ["java compile: %s" % detail]
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if getattr(exc, "winerror", None) == 2 or getattr(exc, "errno", None) == 2:
+            return []
+        return ["java compile: %s" % exc]
+    return []
+
+
+def _syntax_check_csharp(branch_dir):
+    csproj = None
+    for fn in os.listdir(branch_dir):
+        if fn.endswith(".csproj"):
+            csproj = os.path.join(branch_dir, fn)
+            break
+    if not csproj or not shutil_which("dotnet"):
+        return []
+    try:
+        rc = subprocess.run(
+            ["dotnet", "build", csproj, "-v", "q"],
+            cwd=branch_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if rc.returncode != 0:
+            detail = (rc.stderr or rc.stdout or "dotnet build failed").strip()[:200]
+            return ["csharp build: %s" % detail]
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if getattr(exc, "winerror", None) == 2 or getattr(exc, "errno", None) == 2:
+            return []
+        return ["csharp build: %s" % exc]
+    return []
+
+
+def _syntax_check_ts(branch_dir):
+    tsconfig = os.path.join(branch_dir, "tsconfig.json")
+    if not os.path.isfile(tsconfig):
+        return []
+    tsc = shutil_which("tsc") or shutil_which("npx")
+    if not tsc:
+        return []
+    cmd = ["tsc", "-p", tsconfig, "--noEmit"] if shutil_which("tsc") else ["npx", "tsc", "-p", tsconfig, "--noEmit"]
+    try:
+        rc = subprocess.run(cmd, cwd=branch_dir, capture_output=True, text=True, timeout=90, check=False)
+        if rc.returncode != 0:
+            detail = (rc.stderr or rc.stdout or "tsc failed").strip()[:200]
+            return ["typescript: %s" % detail]
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if getattr(exc, "winerror", None) == 2 or getattr(exc, "errno", None) == 2:
+            return []
+        return ["typescript: %s" % exc]
+    return []
+
+
 def _syntax_check_js(branch_dir):
     if not shutil_which("node"):
         return []
@@ -99,6 +168,12 @@ def verify_generated_branch(branch_dir, tech, metric, bt, version, language, pro
         syn = _syntax_check_python(branch_dir)
     elif lang == "javascript":
         syn = _syntax_check_js(branch_dir)
+    elif lang == "typescript":
+        syn = _syntax_check_ts(branch_dir) or _syntax_check_js(branch_dir)
+    elif lang == "java":
+        syn = _syntax_check_java(branch_dir)
+    elif lang in ("csharp", "c#"):
+        syn = _syntax_check_csharp(branch_dir)
     else:
         syn = []
 
@@ -106,8 +181,14 @@ def verify_generated_branch(branch_dir, tech, metric, bt, version, language, pro
         return {"ok": False, "loc": loc, "messages": messages + syn}
     if lang == "python":
         messages.append("py_compile OK")
-    elif syn is not None and lang == "javascript":
+    elif lang == "javascript":
         messages.append("node --check OK")
+    elif lang == "typescript" and syn == []:
+        messages.append("typescript syntax OK")
+    elif lang == "java" and syn == []:
+        messages.append("java compile OK")
+    elif lang in ("csharp", "c#") and syn == []:
+        messages.append("csharp build OK")
 
     if lang == "python":
         from lib.registry import metric_entry, package_name

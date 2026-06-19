@@ -10,6 +10,19 @@ from lib.report_schema import SCHEMA_VERSION, load_report, save_report
 
 COMPARE_TOLERANCE = 0.5  # percentage points for float metric values
 
+NON_COMPARABLE_STATUSES = frozenset({
+    "SKIPPED", "N/A", "AUTH", "ERROR", "UNAVAILABLE",
+})
+
+
+def _non_comparable_status(status):
+    """True when a report status cannot participate in S3/local/sonar pairing."""
+    return (status or "").upper() in NON_COMPARABLE_STATUSES
+
+
+def _report_non_comparable(report):
+    return _non_comparable_status((report or {}).get("status", ""))
+
 
 def _status_compatible(s3_status, local_status):
     if s3_status == local_status:
@@ -230,22 +243,27 @@ def _statuses_compatible(*statuses):
     return all(s in warn_set for s in normalized)
 
 
-def _taxonomy_vs_s3(tax_status, s3_status):
-    """Reference cross-check: does taxonomy status agree with S3? (not part of verdict)."""
-    if tax_status == "SKIPPED" or s3_status == "SKIPPED":
+def _taxonomy_vs_reference(tax_status, other_status):
+    """Reference cross-check: does taxonomy status agree with another report? (not part of verdict)."""
+    if _non_comparable_status(tax_status) or _non_comparable_status(other_status):
         return "N/A"
-    if tax_status == s3_status:
+    if tax_status == other_status:
         return "AGREE"
     warn_set = {"PASS", "WARN"}
-    if tax_status in warn_set and s3_status in warn_set:
+    if tax_status in warn_set and other_status in warn_set:
         return "AGREE"
     return "DIFFERS"
 
 
+def _taxonomy_vs_s3(tax_status, s3_status):
+    """Reference cross-check: does taxonomy status agree with S3? (not part of verdict)."""
+    return _taxonomy_vs_reference(tax_status, s3_status)
+
+
 def _pair_or_na(left_report, right_report, left_label, right_label, **kwargs):
-    left_skipped = (left_report or {}).get("status") == "SKIPPED"
-    right_skipped = (right_report or {}).get("status") == "SKIPPED"
-    if left_skipped or right_skipped:
+    left_na = _report_non_comparable(left_report)
+    right_na = _report_non_comparable(right_report)
+    if left_na or right_na:
         return {
             "verdict": "N/A",
             "summary": "comparison not available (%s=%s, %s=%s)" % (
@@ -278,11 +296,7 @@ def _verdict_from_pairs(*pair_results):
 
 def compare_four_reports(taxonomy_report, s3_report, local_report, sonar_report):
     """Compare S3, local, and SonarQube reports; taxonomy is reference-only."""
-    s3_local = (
-        _pair_or_na(s3_report, local_report, "s3", "local")
-        if (s3_report or {}).get("status") == "SKIPPED" or (local_report or {}).get("status") == "SKIPPED"
-        else compare_reports(s3_report, local_report)
-    )
+    s3_local = _pair_or_na(s3_report, local_report, "s3", "local")
 
     local_sonar = _pair_or_na(
         local_report,
@@ -300,19 +314,24 @@ def compare_four_reports(taxonomy_report, s3_report, local_report, sonar_report)
 
     verdict = _verdict_from_pairs(s3_local, local_sonar)
     taxonomy_vs_s3 = _taxonomy_vs_s3(tax_status, s3_status)
+    taxonomy_vs_local = _taxonomy_vs_reference(tax_status, local_status)
 
     summary_parts = [
         "verdict from S3/local/sonar (taxonomy is reference only)",
-        "taxonomy(ref)=%s taxonomy_vs_s3=%s" % (tax_status, taxonomy_vs_s3),
+        "taxonomy(ref)=%s taxonomy_vs_s3=%s taxonomy_vs_local=%s"
+        % (tax_status, taxonomy_vs_s3, taxonomy_vs_local),
         "s3=%s local=%s sonar=%s" % (s3_status, local_status, sonar_status),
         "local_vs_sonar: %s" % local_sonar.get("summary", ""),
         "s3_vs_local: %s" % s3_local.get("summary", ""),
     ]
     if verdict == "INCOMPLETE":
-        if local_status not in ("SKIPPED", "") and s3_status == "SKIPPED" and sonar_status == "SKIPPED":
+        local_usable = local_status not in NON_COMPARABLE_STATUSES and local_status
+        s3_usable = s3_status not in NON_COMPARABLE_STATUSES and s3_status
+        sonar_usable = sonar_status not in NON_COMPARABLE_STATUSES and sonar_status
+        if local_usable and not s3_usable and not sonar_usable:
             verdict = "PARTIAL"
             summary_parts.insert(0, "local report only — S3 and SonarQube not available for pairing")
-        elif s3_status not in ("SKIPPED", "") and local_status == "SKIPPED" and sonar_status == "SKIPPED":
+        elif s3_usable and not local_usable and not sonar_usable:
             verdict = "PARTIAL"
             summary_parts.insert(0, "S3 report only — local and SonarQube not available for pairing")
 
@@ -326,6 +345,7 @@ def compare_four_reports(taxonomy_report, s3_report, local_report, sonar_report)
         "verdict": verdict,
         "taxonomy_status": tax_status,
         "taxonomy_vs_s3": taxonomy_vs_s3,
+        "taxonomy_vs_local": taxonomy_vs_local,
         "s3_status": s3_status,
         "local_status": local_status,
         "sonar_status": sonar_status,

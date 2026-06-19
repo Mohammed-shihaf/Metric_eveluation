@@ -14,8 +14,11 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+WHITEBOX_AUTO_PREVIEW_LIMIT = 12
+
 from lib.branch_pipeline import (  # noqa: E402
     apply_current_scores,
+    branch_materialized,
     ensure_local_branches,
     generate_branches,
     hydrate_gen_rows_from_work,
@@ -29,7 +32,14 @@ from lib.branch_pipeline import (  # noqa: E402
     validate_branches,
     validate_with_regeneration,
 )
-from lib.compare import summarize_comparisons  # noqa: E402
+from lib.lang_support import (  # noqa: E402
+    default_runtime,
+    language_runtimes,
+    normalize_language,
+    normalize_runtime,
+    sidebar_language_caption,
+)
+from lib.registry_tools import SUPPORTED_UI_LANGUAGES  # noqa: E402
 from lib.compare_export import build_comparison_workbook  # noqa: E402
 from lib.score_display import score_progress_display  # noqa: E402
 from lib.credentials import audit_credentials  # noqa: E402
@@ -58,12 +68,13 @@ from lib.proofs import (  # noqa: E402
     collect_s3_proof,
     collect_sonar_batch,
     compare_readiness,
+    format_branch_issues,
     load_proof_bundle,
     whitebox_completion,
 )
 from lib.registry import load_registry  # noqa: E402
 from lib.repo_state import ensure_repo_aligned  # noqa: E402
-from lib.sa_qa import load_env, run_taxonomy_batch, verify_login  # noqa: E402
+from lib.sa_qa import load_env, reload_s3_credentials, run_taxonomy_batch, verify_login  # noqa: E402
 from lib.tool_map import python_tool  # noqa: E402
 from lib.tool_doctor import load_capability_matrix, run_tool_doctor  # noqa: E402
 from lib.sonar_runner import sonar_server_status  # noqa: E402
@@ -162,6 +173,54 @@ def _diff_rows(diffs):
     return rows
 
 
+def _whitebox_preview_cached(branches):
+    """True when Testable/GitHub preview caches match the current branch scope."""
+    branch_key = ",".join(branches or [])
+    push_key = _push_status_cache_key(branches)
+    cache = st.session_state.get("push_status_cache") or {}
+    return (
+        st.session_state.get("_qa_connected_repos_branches") == branch_key
+        and st.session_state.get("_wb_catalog_preview_branches") == branch_key
+        and cache.get("key") == push_key
+    )
+
+
+def _should_auto_whitebox_preview(branches, force_refresh=False):
+    if force_refresh:
+        return True
+    if len(branches or []) <= WHITEBOX_AUTO_PREVIEW_LIMIT:
+        return True
+    return _whitebox_preview_cached(branches)
+
+
+def _split_diff_rows(diffs):
+    """Split diff rows into matched and mismatched lists."""
+    rows = _diff_rows(diffs)
+    matched = [r for r in rows if r.get("match") is True]
+    mismatched = [r for r in rows if r.get("match") is False]
+    return matched, mismatched
+
+
+def _styled_diff_dataframe(rows, highlight_mismatch=False):
+    """Render diff rows with green/red row highlighting."""
+    if not rows:
+        return
+    import pandas as pd
+
+    df = pd.DataFrame(rows)
+    if highlight_mismatch:
+        def _row_style(row):
+            if row.get("match") is False:
+                return ["background-color: #FFC7CE"] * len(row)
+            if row.get("match") is True:
+                return ["background-color: #C6EFCE"] * len(row)
+            return [""] * len(row)
+
+        st.dataframe(df.style.apply(_row_style, axis=1), width="stretch")
+    else:
+        st.dataframe(df, width="stretch")
+
+
 def _render_pair_diffs(title, pair):
     if not pair:
         st.caption("%s: not available" % title)
@@ -169,21 +228,97 @@ def _render_pair_diffs(title, pair):
     st.markdown("**%s** — `%s`" % (title, pair.get("verdict", "?")))
     if pair.get("summary"):
         st.caption(pair["summary"])
-    field_diffs = _diff_rows(pair.get("field_diffs"))
-    if field_diffs:
-        st.markdown("*Field diffs*")
-        st.dataframe(field_diffs, width="stretch")
-    metric_diffs = _diff_rows(pair.get("metric_diffs"))
-    if metric_diffs:
-        st.markdown("*Metric diffs*")
-        st.dataframe(metric_diffs, width="stretch")
+    field_matched, field_mismatched = _split_diff_rows(pair.get("field_diffs"))
+    metric_matched, metric_mismatched = _split_diff_rows(pair.get("metric_diffs"))
+    matched = field_matched + metric_matched
+    mismatched = field_mismatched + metric_mismatched
+    rename = {}
+    for row in matched + mismatched:
+        for key in list(row.keys()):
+            if key in ("s3", "local", "sonar"):
+                if key == "s3":
+                    rename[key] = "S3 Data"
+                elif key == "local":
+                    rename[key] = "Local Data"
+                elif key == "sonar":
+                    rename[key] = "Sonar Data"
+    def _rename_rows(rows):
+        out = []
+        for row in rows:
+            item = dict(row)
+            for old, new in rename.items():
+                if old in item:
+                    item[new] = item.pop(old)
+            out.append(item)
+        return out
+    matched = _rename_rows(matched)
+    mismatched = _rename_rows(mismatched)
+    if matched:
+        st.markdown("*Matched fields (%d)*" % len(matched))
+        _styled_diff_dataframe(matched, highlight_mismatch=True)
+    if mismatched:
+        st.markdown("*Mismatched fields (%d)*" % len(mismatched))
+        _styled_diff_dataframe(mismatched, highlight_mismatch=True)
+    if not matched and not mismatched:
+        st.caption("No field-level comparison (pair N/A or no overlapping metrics).")
 
 
 _LOCAL_OUTCOME_LEGEND = (
-    "`tool_outcome=FAIL` is expected for Bug/CC/TCC branches (a violation must be present). "
-    "`status=PASS` / `assert_status=PASS` means the tool behaved as expected. "
+    "**Bug** expects `tool_outcome=FAIL` (violation present). "
+    "**BugFX / TCC / CC** expect `tool_outcome=PASS` (TCC also needs effective config). "
+    "`assert_status=PASS` means the branch-type contract is satisfied. "
+    "`status` mirrors raw tool measurement. "
     "Real failures show `status=ERROR/UNAVAILABLE` or `real_tool=False`."
 )
+
+
+def _normalize_outcome(value):
+    text = str(value or "").upper()
+    if text.startswith("FAIL"):
+        return "FAIL"
+    if text.startswith("PASS") or text.startswith("WARN"):
+        return "PASS"
+    return text
+
+
+def _local_failure_layer(report):
+    """Derive which verification layer failed for a local report."""
+    if not report:
+        return ""
+    extra = report.get("extra") or {}
+    branch_type = report.get("branch_type") or ""
+    tool_outcome = _normalize_outcome(extra.get("tool_outcome"))
+    assert_status = str(extra.get("assert_status") or report.get("status") or "").upper()
+    strength_pass = extra.get("strength_pass")
+    config_effective = extra.get("config_effective")
+    actual = str(extra.get("actual_outcome") or "")
+
+    if assert_status == "PASS":
+        return "ok"
+    if branch_type == "Bug" and tool_outcome == "PASS":
+        return "tool"
+    if branch_type != "Bug" and tool_outcome == "FAIL":
+        return "tool"
+    if branch_type == "TCC" and config_effective is False:
+        return "config"
+    if "isolation FAIL" in actual:
+        return "isolation"
+    if strength_pass is False:
+        return "strength"
+    if assert_status == "FAIL":
+        return "branch_type"
+    return ""
+
+
+def _local_run_success(branch_type, tool_outcome, assert_status):
+    """True when tool + assert outcomes match branch-type expectations."""
+    tool = _normalize_outcome(tool_outcome)
+    assert_st = str(assert_status or "").upper()
+    if assert_st != "PASS":
+        return False
+    if branch_type == "Bug":
+        return tool == "FAIL"
+    return tool == "PASS"
 
 
 def _render_local_report(report):
@@ -193,13 +328,20 @@ def _render_local_report(report):
         return
     extra = report.get("extra") or {}
     st.caption(_LOCAL_OUTCOME_LEGEND)
+    tool_outcome = extra.get("tool_outcome") or extra.get("actual_outcome", "—")
+    assert_status = extra.get("assert_status", "—")
     st.dataframe(
         [{
+            "branch_type": report.get("branch_type", "—"),
             "status": report.get("status", "?"),
             "tool": report.get("tool_name", "?"),
-            "tool_outcome": extra.get("tool_outcome") or extra.get("actual_outcome", "—"),
+            "tool_outcome": tool_outcome,
             "expected_outcome": extra.get("expected_outcome", "—"),
-            "assert_status": extra.get("assert_status", "—"),
+            "assert_status": assert_status,
+            "strength_pass": extra.get("strength_pass", "—"),
+            "config_effective": extra.get("config_effective", "—"),
+            "failure_layer": _local_failure_layer(report) or "—",
+            "strength_reason": extra.get("strength_reason", "—"),
             "summary": report.get("raw_summary", ""),
         }],
         width="stretch",
@@ -241,6 +383,7 @@ def _whitebox_result_row(bname, info, proof_row=None):
     completed = info.get("completed_tasks") or 0
     failed = info.get("failed_tasks") or 0
     tasks = "%d/%d" % (completed, total) if total else "—"
+    issues = proof_row.get("issues") or format_branch_issues(info, proof_row.get("s3_report_obj"))
     return {
         "branch": bname,
         "whitebox": info.get("status", "NOT_COMPLETED"),
@@ -250,6 +393,7 @@ def _whitebox_result_row(bname, info, proof_row=None):
         "run_health": info.get("run_health", "—"),
         "taxonomy": proof_row.get("taxonomy_report", "—"),
         "s3": proof_row.get("s3_report", "—"),
+        "issues": "; ".join(issues) if issues else "—",
         "detail": proof_row.get("taxonomy_detail") or proof_row.get("s3_detail") or info.get("run_health_detail") or info.get("detail", ""),
     }
 
@@ -266,9 +410,10 @@ def _render_detailed_comparison(comparison):
         st.caption(comparison["summary"])
     tax_status = comparison.get("taxonomy_status", "—")
     tax_vs_s3 = comparison.get("taxonomy_vs_s3", "—")
+    tax_vs_local = comparison.get("taxonomy_vs_local", "—")
     st.caption(
-        "Taxonomy (reference only): `%s` — agrees with S3: **%s**"
-        % (tax_status, tax_vs_s3)
+        "Taxonomy (reference only): `%s` — agrees with S3: **%s** — agrees with local: **%s**"
+        % (tax_status, tax_vs_s3, tax_vs_local)
     )
     for label, key in (
         ("S3", "s3_status"),
@@ -1350,16 +1495,27 @@ def _sidebar_filters():
             for m in metric_options(tc, registry):
                 metric_choices.append("%s:%s" % (tc, m))
         picked = st.sidebar.multiselect("Metrics", sorted(set(metric_choices)))
-        if picked and len({p.split(":")[0] for p in picked}) == 1:
-            metrics = csv_from_list([p.split(":")[1] for p in picked])
-        elif picked:
-            metrics = csv_from_list([p.split(":")[1] for p in picked])
+        if picked:
+            metrics = csv_from_list(picked)
         else:
             metrics = "DOV" if techniques == "SA" else "all"
 
     type_opts = branch_type_options(registry)
     types = st.sidebar.multiselect("Branch types", type_opts, default=type_opts) or type_opts
     version = st.sidebar.text_input("Version", "2.6")
+
+    lang_opts = list(SUPPORTED_UI_LANGUAGES)
+    language = st.sidebar.selectbox(
+        "Language",
+        lang_opts,
+        index=lang_opts.index("python") if "python" in lang_opts else 0,
+        format_func=lambda c: c.capitalize(),
+    )
+    language = normalize_language(language)
+    runtime_opts = language_runtimes(language)
+    runtime = st.sidebar.selectbox("Runtime version", runtime_opts, index=runtime_opts.index(default_runtime(language)) if default_runtime(language) in runtime_opts else 0)
+    runtime = normalize_runtime(language, runtime)
+    st.sidebar.caption(sidebar_language_caption(language))
 
     summary = selection_summary(techniques, metrics, types, version, registry)
     st.sidebar.metric("In scope", summary["branch_count"])
@@ -1371,12 +1527,26 @@ def _sidebar_filters():
     c2.metric("S3", "OK" if audit["s3_ready"] else "—")
     c3.metric("GitHub", "OK" if _github_creds_ready() else "—")
 
+    aws_key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+    if aws_key.startswith("ASIA"):
+        st.sidebar.caption(
+            "AWS STS credentials (ASIA…) expire about every hour. "
+            "Paste fresh values into `.env.local`, then click **Reload credentials**."
+        )
+    if st.sidebar.button("Reload credentials from .env.local", key="reload_env_creds"):
+        env_path = str(ROOT / ".env.local")
+        load_env(env_path, override=True)
+        n = reload_s3_credentials(env_path, root=str(ROOT))
+        st.sidebar.success("Reloaded %d S3/AWS key(s) from .env.local" % n)
+        st.rerun()
+
     return {
         "techniques": techniques,
         "metrics": metrics,
         "types": types,
         "version": version,
-        "language": "python",
+        "language": language,
+        "runtime": runtime,
         "summary": summary,
         "env_file": str(ROOT / ".env.local"),
         "audit": audit,
@@ -1437,6 +1607,8 @@ def _pipeline_scope_key(filters):
         filters["metrics"],
         tuple(filters["types"]),
         filters["version"],
+        filters["language"],
+        filters["runtime"],
     )
 
 
@@ -1676,11 +1848,27 @@ def _tab_branches(filters):
             st.session_state["validate_rows"] = saved_rows
             st.session_state["validate_ok"] = saved_ok
 
+    gen_rows = st.session_state.get("gen_rows") or []
+    validate_rows = st.session_state.get("validate_rows") or []
+
+    incomplete_local = [
+        r["branch_name"] for r in gen_rows
+        if r.get("dir") and os.path.isdir(r.get("dir"))
+        and not branch_materialized(r["dir"], r.get("technique_code", "SA"))
+    ]
+    if incomplete_local:
+        st.session_state.pop("validate_rows", None)
+        st.session_state.pop("validate_ok", None)
+        validate_rows = []
+        st.warning(
+            "Repaired incomplete local copies (%d branch folder(s) had git metadata only). "
+            "Click **2 — Validate branches** to repopulate and re-run asserts."
+            % len(incomplete_local)
+        )
+
     if "score_history" not in st.session_state:
         st.session_state["score_history"] = _load_score_history(work_root)
 
-    gen_rows = st.session_state.get("gen_rows") or []
-    validate_rows = st.session_state.get("validate_rows") or []
     validate_ok = bool(st.session_state.get("validate_ok"))
     n_generated = len([r for r in gen_rows if r.get("generated")])
     n_validated = len([r for r in validate_rows if r.get("overall") in ("PASS", "PARTIAL")])
@@ -1939,6 +2127,7 @@ def _tab_branches(filters):
                     strength_map=strength_map,
                     max_fix_attempts=int(max_fix_attempts),
                     auto_install=auto_install,
+                    runtime=filters["runtime"],
                 )
             st.session_state["gen_rows"] = gen_result.get("rows", [])
             score_history = update_regenerated_strength(
@@ -1987,7 +2176,8 @@ def _tab_branches(filters):
     if run_validate:
         gen_rows = st.session_state.get("gen_rows") or []
         read_cfg = _github_read_config()
-        n_to_validate = len([r for r in gen_rows if r.get("generated") and r.get("dir")])
+        st.session_state.pop("validate_ok", None)
+        n_to_validate = len([r for r in gen_rows if r.get("dir") and os.path.isdir(r.get("dir"))])
         with RunPanel("Validating %d branches (strength asserts)" % max(n_to_validate, total)) as panel:
             with panel.stdout_redirect():
                 if read_cfg and n_on_github > 0:
@@ -2523,7 +2713,14 @@ def _tab_whitebox(filters):
         st.session_state.pop("_qa_connected_repos_branches", None)
 
     qa_repo = gh_repo
-    if filters.get("qa_ready") and gh_repo:
+    auto_preview = _should_auto_whitebox_preview(branches, force_refresh=wb_refresh)
+    if not auto_preview and n_in_scope > WHITEBOX_AUTO_PREVIEW_LIMIT:
+        st.info(
+            "Large selection (**%d** branches). Click **Refresh status** to load Testable catalog "
+            "and GitHub state without blocking the page."
+            % n_in_scope
+        )
+    if filters.get("qa_ready") and gh_repo and auto_preview:
         connected_repos, list_error = _fetch_qa_connected_repositories(
             filters["env_file"],
             branch_names=branches,
@@ -2537,7 +2734,7 @@ def _tab_whitebox(filters):
         )
 
     catalog_preview = None
-    if filters.get("qa_ready") and qa_repo:
+    if filters.get("qa_ready") and qa_repo and auto_preview:
         catalog_preview = _whitebox_testable_catalog_preview(
             filters["env_file"],
             qa_repo,
@@ -2567,7 +2764,13 @@ def _tab_whitebox(filters):
         elif catalog_preview and catalog_preview.get("error"):
             st.caption("Testable catalog check: %s" % catalog_preview["error"])
 
-    push_rows, _ = _branch_push_status(branches, force_refresh=wb_refresh)
+    if auto_preview:
+        push_rows, _ = _branch_push_status(branches, force_refresh=wb_refresh)
+    else:
+        push_rows = [{
+            "branch": name, "on_github": "—", "remote_sha": "—",
+            "repository": gh_repo or "—",
+        } for name in branches]
     push_by_branch = {r["branch"]: r for r in push_rows}
     wb_status = whitebox_completion(branches, root=str(ROOT)) or {}
 
@@ -2575,10 +2778,11 @@ def _tab_whitebox(filters):
     for bname in branches:
         push = push_by_branch.get(bname, {})
         wb = wb_status.get(bname, {})
-        on_github = push.get("on_github") == "yes"
+        on_github_val = push.get("on_github")
+        on_github = on_github_val == "yes"
         readiness.append({
             "branch": bname,
-            "on_github": "yes" if on_github else "no",
+            "on_github": on_github_val if on_github_val in ("yes", "no") else "—",
             "whitebox": wb.get("status", "NOT_COMPLETED"),
             "run": wb.get("run_status") or "—",
             "tasks": (
@@ -2855,24 +3059,39 @@ def _tab_whitebox(filters):
                     "taxonomy_detail": info.get("detail", "") if info.get("status") != "COMPLETED" else "",
                     "s3_detail": "—",
                     "failing_sections": info.get("failing_sections") or [],
+                    "issues": format_branch_issues(info),
                 }
+                s3_report = None
                 if info.get("status") == "COMPLETED":
                     try:
                         with panel.stdout_redirect():
                             s3_report = collect_s3_proof(
-                                bname, meta=info.get("meta"), root=str(ROOT)
+                                bname,
+                                meta=info.get("meta"),
+                                root=str(ROOT),
+                                manifest_run=info.get("manifest_run"),
+                                expects_s3=info.get("expects_s3"),
                             )
                         row["taxonomy_report"] = "yes"
                         row["s3_report"] = s3_report.get("status", "?")
-                        row["taxonomy_detail"] = "taxonomy report produced"
-                        row["s3_detail"] = _skip_detail(s3_report) if s3_report.get("status") == "SKIPPED" else s3_report.get("raw_summary", "")
+                        row["s3_report_obj"] = s3_report
+                        row["taxonomy_detail"] = "taxonomy report collected"
+                        if s3_report.get("status") == "N/A":
+                            row["s3_detail"] = _skip_detail(s3_report)
+                        elif s3_report.get("status") in ("SKIPPED", "AUTH"):
+                            row["s3_detail"] = _skip_detail(s3_report)
+                        else:
+                            row["s3_detail"] = s3_report.get("raw_summary", "")
                     except Exception as exc:
                         row["taxonomy_report"] = "error"
-                        row["s3_report"] = str(exc)
+                        row["s3_report"] = "ERROR"
                         row["s3_detail"] = str(exc)
+                        row["issues"] = format_branch_issues(info) + ["S3 proof collection failed: %s" % exc]
                 else:
                     row["taxonomy_report"] = "—"
                     row["s3_report"] = "—"
+                if s3_report:
+                    row["issues"] = format_branch_issues(info, s3_report)
                 proof_rows.append(row)
                 panel.progress("proofs", idx, len(selected), bname, row["whitebox"])
 
@@ -2884,6 +3103,11 @@ def _tab_whitebox(filters):
                 width="stretch",
             )
             for r in proof_rows:
+                branch_issues = r.get("issues") or []
+                if branch_issues:
+                    with st.expander("Issues — %s" % r["branch"]):
+                        for line in branch_issues:
+                            st.markdown("- %s" % line)
                 sections = r.get("failing_sections") or []
                 if sections:
                     with st.expander("Failing sections — %s" % r["branch"]):
@@ -3089,10 +3313,14 @@ def _tab_local_tools(filters):
             st.dataframe(
                 [{
                     "branch": r["branch_name"],
+                    "branch_type": (r.get("local_report") or {}).get("branch_type", ""),
                     "status": r.get("status"),
                     "primary_tool": r.get("tool", ""),
                     "executed_tool": r.get("executed_tool", ""),
                     "real_tool": r.get("real_tool"),
+                    "tool_outcome": ((r.get("local_report") or {}).get("extra") or {}).get("tool_outcome", "—"),
+                    "assert_status": ((r.get("local_report") or {}).get("extra") or {}).get("assert_status", "—"),
+                    "failure_layer": _local_failure_layer(r.get("local_report") or {}) or "—",
                     "local_status": (r.get("local_report") or {}).get("status"),
                     "summary": (r.get("local_report") or {}).get("raw_summary", ""),
                     "install_failed": ", ".join(r.get("install_failed") or []),
@@ -3105,6 +3333,10 @@ def _tab_local_tools(filters):
                 install_msg = r.get("install_msg") or ""
                 report_path = r.get("report_path") or ""
                 local_report = r.get("local_report") or {}
+                extra = local_report.get("extra") or {}
+                branch_type = local_report.get("branch_type") or ""
+                tool_outcome = extra.get("tool_outcome", "")
+                assert_status = extra.get("assert_status", "")
                 status = r.get("status", "")
                 if status in ("ERROR", "UNAVAILABLE") or r.get("real_tool") is False:
                     st.error(
@@ -3114,18 +3346,22 @@ def _tab_local_tools(filters):
                     stderr = r.get("tool_stderr") or ""
                     if stderr:
                         st.code(stderr[:2000], language=None)
-                elif status == "FAIL":
-                    extra = local_report.get("extra") or {}
-                    if extra.get("assert_status") == "PASS":
-                        st.info(
-                            "%s — tool_outcome=FAIL is expected for this branch type (assert passed)"
-                            % r["branch_name"]
-                        )
-                    else:
-                        st.warning(
-                            "%s — FAIL metric threshold (executed: %s, real: %s)"
-                            % (r["branch_name"], r.get("executed_tool") or "none", r.get("real_tool"))
-                        )
+                elif _local_run_success(branch_type, tool_outcome, assert_status):
+                    st.success(
+                        "%s — branch contract satisfied (%s tool_outcome=%s, assert=%s)"
+                        % (r["branch_name"], branch_type, _normalize_outcome(tool_outcome), assert_status)
+                    )
+                elif assert_status == "PASS" and str(local_report.get("status", "")).upper() != _normalize_outcome(tool_outcome):
+                    st.warning(
+                        "%s — status/tool_outcome mismatch (status=%s, tool_outcome=%s)"
+                        % (r["branch_name"], local_report.get("status"), tool_outcome)
+                    )
+                elif status == "FAIL" or assert_status == "FAIL":
+                    layer = _local_failure_layer(local_report) or "unknown"
+                    st.warning(
+                        "%s — assert failed (layer=%s, executed: %s)"
+                        % (r["branch_name"], layer, r.get("executed_tool") or "none")
+                    )
                 if log or install_msg or report_path or local_report:
                     with st.expander("Report — %s" % r["branch_name"]):
                         if install_msg:
@@ -3138,6 +3374,32 @@ def _tab_local_tools(filters):
                             _render_local_report(local_report)
                         elif log:
                             st.code(log, language=None)
+            comparable = [
+                r["branch_name"] for r in results
+                if (r.get("local_report") or {}).get("status") in ("PASS", "FAIL", "WARN")
+            ]
+            if comparable:
+                comparisons = []
+                for bname in comparable:
+                    try:
+                        comparisons.append(collect_comparison_proof(bname, root=str(ROOT)))
+                    except Exception as exc:
+                        comparisons.append({
+                            "branch_name": bname,
+                            "verdict": "ERROR",
+                            "summary": str(exc),
+                        })
+                st.session_state["last_comparisons"] = comparisons
+                cmp_summary = summarize_comparisons(comparisons)
+                st.info(
+                    "Auto-compared %d branch(es): MATCH=%d PARTIAL=%d MISMATCH=%d — see Compare tab"
+                    % (
+                        len(comparisons),
+                        cmp_summary["match"],
+                        cmp_summary.get("partial", 0),
+                        cmp_summary["mismatch"],
+                    )
+                )
             panel.set_result("complete", "complete")
         st.toast("Local tool run finished", icon="✅")
 
@@ -3270,10 +3532,10 @@ def _tab_comparison(filters):
     st.dataframe(
         [{
             "branch": r["branch_name"],
-            "taxonomy_ref": r["taxonomy"],
-            "s3": r["s3"],
-            "local": r["local"],
-            "sonar": r.get("sonar", False),
+            "taxonomy_ref": r.get("taxonomy_label", r["taxonomy"]),
+            "s3": r.get("s3_label", r["s3"]),
+            "local": r.get("local_label", r["local"]),
+            "sonar": r.get("sonar_label", r.get("sonar", False)),
             "can_compare": r.get("can_compare", False),
             "all_four": r["ready"],
             "missing": ", ".join(r["missing"]) if r["missing"] else "",
@@ -3321,18 +3583,17 @@ def _tab_comparison(filters):
         st.toast("Comparison done", icon="✅")
 
     st.subheader("Reports & comparison")
-    h1, h2, h3, h4, h5 = st.columns([3, 2, 2, 2, 3])
+    h1, h2, h3, h4 = st.columns([4, 2, 2, 2])
     h1.markdown("**Branch**")
     h2.markdown("**S3 report**")
     h3.markdown("**Local report**")
     h4.markdown("**SonarQube**")
-    h5.markdown("**Compare**")
 
     readiness_by = {row["branch_name"]: row for row in readiness}
     for bname in completed:
         bundle = load_proof_bundle(bname, root=str(ROOT)) or {}
         row = readiness_by.get(bname, {})
-        c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 3])
+        c1, c2, c3, c4 = st.columns([4, 2, 2, 2])
         with c1:
             st.write(bname)
         safe = bname.replace("/", "_")
@@ -3366,19 +3627,19 @@ def _tab_comparison(filters):
             )
         else:
             c4.caption("not run / Docker required")
-        with c5:
-            with st.expander("Compare"):
-                comparison = _load_branch_comparison(bname, bundle, row)
-                _render_detailed_comparison(comparison)
-                comp_path = _report_path(bundle, "comparison", "comparison.json")
-                if comp_path and Path(comp_path).is_file():
-                    st.download_button(
-                        "Download comparison JSON",
-                        data=Path(comp_path).read_bytes(),
-                        file_name="%s_comparison.json" % safe,
-                        mime="application/json",
-                        key=_streamlit_key("dl_cmp", bname),
-                    )
+
+        comparison = _load_branch_comparison(bname, bundle, row)
+        with st.expander("Compare — %s" % bname, expanded=False):
+            _render_detailed_comparison(comparison)
+            comp_path = _report_path(bundle, "comparison", "comparison.json")
+            if comp_path and Path(comp_path).is_file():
+                st.download_button(
+                    "Download comparison JSON",
+                    data=Path(comp_path).read_bytes(),
+                    file_name="%s_comparison.json" % safe,
+                    mime="application/json",
+                    key=_streamlit_key("dl_cmp", bname),
+                )
         tax_path = _report_path(bundle, "taxonomy_report", "taxonomy_report.json")
         if tax_path and Path(tax_path).is_file():
             st.caption("Taxonomy reference: `%s`" % tax_path)
@@ -3414,6 +3675,7 @@ def _tab_comparison(filters):
             "branch": row.get("branch_name", "?"),
             "verdict": row.get("verdict", "?"),
             "taxonomy_vs_s3": row.get("taxonomy_vs_s3", "—"),
+            "taxonomy_vs_local": row.get("taxonomy_vs_local", "—"),
             "s3_vs_local": (row.get("s3_vs_local") or {}).get("verdict", "—"),
             "local_vs_sonar": (row.get("local_vs_sonar") or {}).get("verdict", "—"),
             "summary": row.get("summary", ""),

@@ -9,17 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lib.tool_assert import (
-    CHURN_FAIL_THRESHOLD,
-    COMPLEXITY_FAIL_THRESHOLD,
-    COVERAGE_FAIL_THRESHOLD,
-    DUP_FAIL_THRESHOLD,
-    MUTATION_RATIO_FAIL,
     _branch_context,
+    metric_violation,
+    status_from_violation,
 )
 
 SCHEMA_VERSION = "1.0"
 VALID_SOURCES = ("s3", "local", "taxonomy", "sonar")
-VALID_STATUSES = ("PASS", "FAIL", "WARN", "SKIPPED", "ERROR", "UNAVAILABLE")
+VALID_STATUSES = ("PASS", "FAIL", "WARN", "SKIPPED", "ERROR", "UNAVAILABLE", "N/A", "AUTH")
 
 
 def _utc_now():
@@ -156,11 +153,20 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
     else:
         metric_values = _parse_metric_values_from_raw(raw)
         family = _tool_family_for_metric(technique_code, metric_code)
-        if metric_values and family:
-            norm_status = _status_from_metric_values(family, metric_values, branch_type)
+        tool_outcome = str(result.get("tool_outcome") or "").upper()
+        real_tool = result.get("real_tool")
+        if real_tool is None:
+            real_tool = not str(result.get("tool_used", "")).startswith("structural")
+        if tool_outcome in ("PASS", "FAIL", "WARN") and real_tool:
+            norm_status = tool_outcome
+        elif metric_values and family:
+            n_tests = metric_values.get("tests")
+            norm_status = _status_from_metric_values(
+                family, metric_values, branch_type, n_tests=n_tests,
+            )
         elif not raw:
             norm_status = "ERROR"
-        elif result.get("real_tool") and result.get("status") in ("PASS", "FAIL"):
+        elif real_tool and result.get("status") in ("PASS", "FAIL"):
             norm_status = result.get("status")
         else:
             norm_status = "ERROR"
@@ -258,33 +264,13 @@ def _coverage_from_json(data, target_rel):
     }
 
 
-def _status_from_metric_values(family, values, branch_type=None):
-    if family == "coverage":
-        pct = float(values.get("coverage_pct", 0))
-        violation = pct < COVERAGE_FAIL_THRESHOLD
-        return _outcome_from_violation(violation)
-    if family == "complexity":
-        max_cc = int(values.get("max_cc", 0))
-        return _outcome_from_violation(max_cc > COMPLEXITY_FAIL_THRESHOLD)
-    if family == "security":
-        findings = int(values.get("findings", 0))
-        return _outcome_from_violation(findings > 0)
-    if family == "sca":
-        vulns = int(values.get("vulns", 0))
-        return _outcome_from_violation(vulns > 0)
-    if family == "mutation":
-        ratio = float(values.get("mutation_ratio", values.get("test_fn_ratio", 1)))
-        return _outcome_from_violation(ratio < MUTATION_RATIO_FAIL)
-    if family == "churn":
-        score = float(values.get("churn_score", 0))
-        return _outcome_from_violation(score > CHURN_FAIL_THRESHOLD)
-    if family == "duplication":
-        dup = float(values.get("dup_pct", 0))
-        return _outcome_from_violation(dup > DUP_FAIL_THRESHOLD)
-    if family == "lint":
-        issues = int(values.get("issues", 0))
-        return _outcome_from_violation(issues > 0)
-    return "PASS"
+def _status_from_metric_values(family, values, branch_type=None, n_tests=None):
+    if not family:
+        return "PASS"
+    if n_tests is None and values:
+        n_tests = values.get("tests")
+    violation = metric_violation(family, values, branch_type=branch_type, n_tests=n_tests)
+    return status_from_violation(violation)
 
 
 def _extract_s3_metric_values(tool_root, family, ctx):
@@ -407,7 +393,9 @@ def from_s3_tool_root(
             extra={"tool_root": str(tool_root), "family": family},
         )
 
-    status = _status_from_metric_values(family, metric_values, branch_type)
+    status = _status_from_metric_values(
+        family, metric_values, branch_type, n_tests=metric_values.get("tests"),
+    )
     return make_report(
         technique_code=technique_code,
         metric_code=metric_code,

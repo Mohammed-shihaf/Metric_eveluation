@@ -75,6 +75,35 @@ class WhiteboxCompletionTests(unittest.TestCase):
         result = whitebox_completion([branch], root=self._tmpdir)
         self.assertEqual(result[branch]["status"], "NOT_COMPLETED")
 
+    def test_json_only_report_folder_completed(self):
+        branch = "SA_Decision-Outcome-Verification_Bug_2.6"
+        class_dir = self._class_dir("Structural Analysis")
+        folder = os.path.join(class_dir, "%s_20260619T061541Z" % branch)
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "run_id.txt"), "w", encoding="utf-8") as fh:
+            fh.write("598e3d1d-eede-495e-bf06-1831982fce13")
+        with open(os.path.join(folder, "run_summary.json"), "w", encoding="utf-8") as fh:
+            import json
+            json.dump(
+                {
+                    "run_id": "598e3d1d-eede-495e-bf06-1831982fce13",
+                    "commit_sha": "5677904bbd7e61627c206de4cbb31629c0b25e19",
+                    "branch_name": branch,
+                    "status": "failed",
+                    "total_tasks": 28,
+                    "completed_tasks": 27,
+                    "failed_tasks": 1,
+                },
+                fh,
+            )
+        with open(os.path.join(folder, "taxonomy-gate.json"), "w", encoding="utf-8") as fh:
+            import json
+            json.dump({"gate_status": "completed", "weighted_breakdown": []}, fh)
+        result = whitebox_completion([branch], root=self._tmpdir)
+        self.assertEqual(result[branch]["status"], "COMPLETED")
+        self.assertEqual(result[branch]["commit_sha"], "5677904bbd7e61627c206de4cbb31629c0b25e19")
+        self.assertFalse(result[branch]["expects_s3"])
+
     def test_taxonomy_complete_with_failed_task_is_ok_health(self):
         branch = "SX_Entry-Point-Sanitization_Bug_2.6"
         class_dir = self._class_dir("Security White-box Testing")

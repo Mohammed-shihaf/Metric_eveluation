@@ -88,11 +88,51 @@ def parse_techniques_arg(value, registry=None):
     return codes
 
 
+def parse_qualified_metrics(value):
+    """Split metric filter into per-technique codes and bare wildcards.
+
+    Returns (by_technique, wildcards, has_qualified) where tokens like
+    ``CQ:ABPO`` map to technique CQ and bare ``DOV`` applies to all techniques.
+    """
+    if not value or str(value).strip().lower() == "all":
+        return {}, [], False
+    by_technique = {}
+    wildcards = []
+    has_qualified = False
+    for token in str(value).split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if ":" in token:
+            tech_part, _, metric_part = token.partition(":")
+            tech_code = tech_part.strip().upper()
+            metric_code = metric_part.strip().upper()
+            if not tech_code or not metric_code:
+                continue
+            has_qualified = True
+            by_technique.setdefault(tech_code, []).append(metric_code)
+        else:
+            wildcards.append(token.upper())
+    return by_technique, wildcards, has_qualified
+
+
 def parse_metrics_filter(value, technique_code, registry=None):
     tech = technique_by_code(technique_code, registry)
     known = [m["metric_code"] for m in tech["metrics"]]
     if not value or str(value).strip().lower() == "all":
         return list(known)
+    by_technique, wildcards, has_qualified = parse_qualified_metrics(value)
+    if has_qualified:
+        effective = list(by_technique.get(technique_code, []))
+        for code in wildcards:
+            if code in known and code not in effective:
+                effective.append(code)
+        if not effective:
+            return []
+        bad = [c for c in effective if c not in known]
+        if bad:
+            raise ValueError("Unknown metric(s) for %s: %s" % (technique_code, bad))
+        return effective
     codes = [c.strip().upper() for c in str(value).split(",") if c.strip()]
     bad = [c for c in codes if c not in known]
     if bad:

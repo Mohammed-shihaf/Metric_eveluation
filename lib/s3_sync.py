@@ -10,6 +10,42 @@ ROOT = Path(__file__).resolve().parents[1]
 
 COVERAGE_REL = "coverage-py/0/coverage.json"
 
+AWS_AUTH_ERROR_CODES = frozenset({
+    "InvalidToken",
+    "ExpiredToken",
+    "TokenRefreshRequired",
+    "SignatureDoesNotMatch",
+    "AccessDenied",
+    "InvalidAccessKeyId",
+})
+
+AWS_AUTH_REASON = (
+    "AWS S3 credentials expired or invalid — paste fresh "
+    "AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN "
+    "into .env.local (STS tokens last ~1h)."
+)
+
+
+def _aws_auth_error(exc):
+    """True when boto3/S3 rejected credentials (expired STS token, etc.)."""
+    response = getattr(exc, "response", None) or {}
+    code = (response.get("Error") or {}).get("Code", "")
+    if code in AWS_AUTH_ERROR_CODES:
+        return True
+    msg = str(exc)
+    return any(token in msg for token in AWS_AUTH_ERROR_CODES)
+
+
+def _auth_failure_summary(branch, commit_sha="", run_id="", taxonomy_html_path=""):
+    return {
+        "branch": branch,
+        "status": "AUTH",
+        "reason": AWS_AUTH_REASON,
+        "commit_sha": commit_sha,
+        "run_id": run_id,
+        "taxonomy_html_path": taxonomy_html_path,
+    }
+
 
 def _s3_config():
     return {
@@ -187,8 +223,21 @@ def sync_run(branch, commit_sha, run_id, taxonomy_html_path="", cell_batch_id=No
             "taxonomy_html_path": taxonomy_html_path,
         }
 
-    found = find_s3_run_prefix(
-        bucket, search_prefix, branch, commit_sha, run_id, cell_batch_id or None)
+    try:
+        found = find_s3_run_prefix(
+            bucket, search_prefix, branch, commit_sha, run_id, cell_batch_id or None)
+    except Exception as exc:
+        if _aws_auth_error(exc):
+            return _auth_failure_summary(branch, commit_sha, run_id, taxonomy_html_path)
+        return {
+            "branch": branch,
+            "commit_sha": commit_sha,
+            "run_id": run_id,
+            "status": "ERROR",
+            "error": str(exc),
+            "taxonomy_html_path": taxonomy_html_path,
+        }
+
     if not found:
         return {
             "branch": branch,
@@ -232,6 +281,8 @@ def sync_run(branch, commit_sha, run_id, taxonomy_html_path="", cell_batch_id=No
             if cov_status != "OK":
                 summary["coverage_note"] = "bundle downloaded; coverage-py optional or empty"
     except Exception as exc:
+        if _aws_auth_error(exc):
+            return _auth_failure_summary(branch, commit_sha, run_id, taxonomy_html_path)
         summary["status"] = "ERROR"
         summary["error"] = str(exc)
 
@@ -239,8 +290,12 @@ def sync_run(branch, commit_sha, run_id, taxonomy_html_path="", cell_batch_id=No
 
 
 def sync_from_taxonomy_meta(meta, dry_run=False):
+    branch = meta.get("branch", "")
+    if not branch and meta.get("report_dir"):
+        from lib.taxonomy_meta import meta_from_report_folder
+        branch = meta_from_report_folder(meta["report_dir"]).get("branch", "")
     return sync_run(
-        branch=meta.get("branch", ""),
+        branch=branch,
         commit_sha=meta.get("commit_sha", ""),
         run_id=meta.get("run_id", ""),
         taxonomy_html_path=meta.get("html_path", ""),
@@ -256,7 +311,10 @@ def sync_from_taxonomy_meta_with_retry(meta, wait_sec=60, poll_sec=10, dry_run=F
     last = None
     while True:
         last = sync_from_taxonomy_meta(meta, dry_run=dry_run)
-        if last.get("status") in ("OK", "DRY_RUN", "SKIPPED"):
+        status = last.get("status")
+        if status in ("OK", "DRY_RUN", "SKIPPED", "AUTH"):
+            return last
+        if status == "MISSING" and (last.get("reason") or "") == "commit_sha and run_id required":
             return last
         if time.time() >= deadline:
             return last

@@ -176,7 +176,10 @@ def _count_loc(files, pkg):
     return total
 
 
-def _gen_config(tech, metric, branch_type, version, language, pkg):
+def _gen_config(tech, metric, branch_type, version, language, pkg, runtime=None):
+    from lib.lang_support import default_runtime, normalize_runtime
+
+    rt = normalize_runtime(language, runtime or default_runtime(language))
     tools = "\n".join(
         "    '%s': {'classification': '%s', 'metric': '%s', 'tool': '%s'}," % (
             m["module_key"],
@@ -189,7 +192,8 @@ def _gen_config(tech, metric, branch_type, version, language, pkg):
     return FUTURE + (
         '"""Runtime configuration for %(l2)s / %(l3)s."""\n'
         "LANGUAGE = '%(language)s'\n"
-        "PYTHON_VERSION = '%(version)s'\n"
+        "RUNTIME_VERSION = '%(runtime)s'\n"
+        "PYTHON_VERSION = '%(runtime)s'\n"
         "BRANCH_TYPE = '%(branch_type)s'\n"
         "BRANCH_VARIANT = '%(branch_type)s'\n"
         "TARGET_TECHNIQUE = '%(tech)s'\n"
@@ -200,6 +204,7 @@ def _gen_config(tech, metric, branch_type, version, language, pkg):
         "METRIC_TOOL_MAP = {\n%(tools)s\n}\n"
     ) % {
         "language": language,
+        "runtime": rt,
         "version": version,
         "branch_type": branch_type,
         "tech": tech["technique_code"],
@@ -254,7 +259,7 @@ def _case_body(prefix, idx, variant, metric_name, tool, technique_code=None, fam
             "        return lookup[state]\n" % (prefix, prefix)
         )
         if family == "complexity" and strength > 0:
-            extra = "    return 'simple-%s-%%s-%%d' %% (state, idx)\n" % prefix
+            extra = "    return 'neutral-%s-%%s-%%d' %% (state, idx)\n" % prefix
     return (
         "def %s_case_%d(state, enabled, retry_count, priority):\n"
         '    """Evaluate %s case %d (%s-oriented)."""\n'
@@ -505,16 +510,20 @@ def _tool_configs(branch_type, pkg, primary_tool, family=None):
     return configs
 
 
-def generate_branch_files(technique_code, metric_code, branch_type, version="2.6", language="python", strength=0):
+def generate_branch_files(technique_code, metric_code, branch_type, version="2.6", language="python", strength=0, runtime=None):
     from lib.lang_generators.base import effective_strength, scaled_n_functions
-    strength = effective_strength(strength)
-    if (language or "python").strip().lower() != "python":
-        from lib.lang_generators.template_core import generate_branch_files as dispatch_gen
-        return dispatch_gen(technique_code, metric_code, branch_type, version, language, strength=strength)
-    from lib.metrics import branch_name as metrics_branch_name
+    from lib.lang_support import normalize_language
 
+    strength = effective_strength(strength)
+    if normalize_language(language) != "python":
+        from lib.lang_generators.template_core import generate_branch_files as dispatch_gen
+        return dispatch_gen(technique_code, metric_code, branch_type, version, language, strength=strength, runtime=runtime)
+    from lib.lang_support import default_runtime, normalize_runtime
+
+    rt = normalize_runtime(language, runtime or default_runtime(language))
     tech = technique_by_code(technique_code)
     _, metric = metric_entry(technique_code, metric_code)
+    from lib.metrics import branch_name as metrics_branch_name
     pkg = package_name(technique_code)
     variant = VARIANT_MAP[branch_type]
     tool = (metric.get("tools") or {}).get("python", {}).get("primary", "")
@@ -526,7 +535,7 @@ def generate_branch_files(technique_code, metric_code, branch_type, version="2.6
     while n_fn <= 180:
         files = _assemble_files(
             tech, metric, technique_code, metric_code, pkg, variant, n_fn, tool,
-            branch_type, version, language, strength=strength,
+            branch_type, version, language, strength=strength, runtime=rt,
         )
         loc = _count_loc(files, pkg)
         if loc >= MIN_LOC:
@@ -542,6 +551,7 @@ def generate_branch_files(technique_code, metric_code, branch_type, version="2.6
             "branch_type": branch_type,
             "version": version,
             "language": language,
+            "runtime": rt,
             "n_functions": n_fn,
             "loc": loc,
             "branch_name": bname,
@@ -551,12 +561,12 @@ def generate_branch_files(technique_code, metric_code, branch_type, version="2.6
     return files
 
 
-def _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_fn, tool, branch_type, version, language, strength=0):
+def _assemble_files(tech, metric, technique_code, metric_code, pkg, variant, n_fn, tool, branch_type, version, language, strength=0, runtime=None):
     from lib.tool_assert import tool_family
 
     files = {}
     files["%s/__init__.py" % pkg] = _gen_init(pkg, tech["l2"], version)
-    files["%s/config.py" % pkg] = _gen_config(tech, metric, branch_type, version, language, pkg)
+    files["%s/config.py" % pkg] = _gen_config(tech, metric, branch_type, version, language, pkg, runtime=runtime)
     files["%s/models.py" % pkg] = gen_models_py().replace("sa/", "%s/" % pkg)
     for rel, gen_fn in SUPPORT_GENERATORS.items():
         if rel == "sa/models.py":
@@ -636,17 +646,18 @@ def _safe_rmtree(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
-def write_branch(root, technique_code, metric_code, branch_type, version="2.6", language="python", strength=0):
+def write_branch(root, technique_code, metric_code, branch_type, version="2.6", language="python", strength=0, runtime=None):
     import os
     from lib.lang_generators.base import effective_strength
+    from lib.lang_support import normalize_language
     from lib.metrics import branch_name as metrics_branch_name
 
     strength = effective_strength(strength)
-    if (language or "python").strip().lower() != "python":
+    if normalize_language(language) != "python":
         from lib.lang_generators.template_core import write_branch as dispatch_write
-        return dispatch_write(root, technique_code, metric_code, branch_type, version, language, strength=strength)
+        return dispatch_write(root, technique_code, metric_code, branch_type, version, language, strength=strength, runtime=runtime)
 
-    files = generate_branch_files(technique_code, metric_code, branch_type, version, language, strength=strength)
+    files = generate_branch_files(technique_code, metric_code, branch_type, version, language, strength=strength, runtime=runtime)
     if os.path.isdir(root):
         _safe_rmtree(root)
     os.makedirs(root)

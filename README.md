@@ -1,69 +1,56 @@
 # Testable Assurance Studio
 
-Metric evaluation pipeline: generate branches, whitebox QA, local tools, SonarQube Community, and 4-way comparison.
+Streamlit application for **metric branch generation, validation, GitHub push, Testable whitebox analysis, S3/local/Sonar comparison, and Excel proof export**.
 
-## Pipeline (Streamlit UI)
+Part of the Testable metric evaluation pipeline (`Metric_evaluation` repository).
+
+## Quick start
 
 ```bash
-py -3 -m streamlit run ui/app.py
+pip install -r requirements.txt
+copy .env.example .env.local   # configure credentials
+streamlit run ui/app.py
 ```
 
-| Step | Tab | Output |
-|------|-----|--------|
-| 1 | Branches | GitHub OAuth push (per-user encrypted token) + in-memory validate |
-| 2 | Whitebox | taxonomy HTML + S3 reports |
-| 3 | Local tools | `proofs/<TECH>/<branch>/local_report.json` (isolated throwaway venv) |
-| 4 | SonarQube | `proofs/<TECH>/<branch>/sonar_report.json` |
-| 5 | Compare | `comparison.json` (taxonomy / S3 / local / sonar) |
+Open **http://localhost:8501**
 
-## SonarQube Community (Docker)
+## Documentation
 
-Step 4 auto-manages SonarQube via Docker:
+Full documentation lives in **[Testabel_Assurance_Studio_Docs/](Testabel_Assurance_Studio_Docs/README.md)**:
 
-- Pulls `sonarqube:community` and `sonarsource/sonar-scanner-cli` on first run (~600MB).
-- Starts container `tas-sonarqube` on port **9000**; cold start takes **1–2 minutes**.
-- Generates `coverage.xml` per branch, runs the scanner, and writes a standard `sonar_report.json`.
-- Token cached in `.sonar_token` (gitignored).
+| Document | Description |
+|----------|-------------|
+| [Documentation index](Testabel_Assurance_Studio_Docs/README.md) | Start here |
+| [High-Level Design](Testabel_Assurance_Studio_Docs/01-high-level-design.md) | Architecture, data model, integrations |
+| [Functional Guide](Testabel_Assurance_Studio_Docs/02-functional-guide.md) | UI walkthrough with screenshots |
+| [Process & Workflows](Testabel_Assurance_Studio_Docs/03-process-workflows.md) | End-to-end assurance procedures |
+| [Setup & Configuration](Testabel_Assurance_Studio_Docs/04-setup-and-configuration.md) | Install, `.env.local`, deployment |
+| [Module Reference](Testabel_Assurance_Studio_Docs/05-module-reference.md) | Code layout for developers |
+| [Tool Assert Semantics](Testabel_Assurance_Studio_Docs/TOOL_ASSERTS.md) | Branch-type expectations |
+| [Metrics Registry](Testabel_Assurance_Studio_Docs/METRICS_REGISTRY_SUMMARY.md) | 14 techniques, 103 metrics |
 
-Optional overrides in `.env.local` — see [`.env.example`](.env.example) (`SONAR_HOST_URL`, `SONAR_CONTAINER_NAME`, etc.).
+## Pipeline
 
-**Requirements:** Docker Desktop running (Windows: scanner uses `host.docker.internal` to reach the server).
+```
+Generate → Validate → Push → Whitebox → Local tools → SonarQube → Compare → Excel
+```
 
-## GitHub connect (Branches tab)
+## Features
 
-Same flow as Testable SCM integrations (`ai-testable-platform`):
+- **412 metric branches** across 14 techniques (SA, RM, CQ, LR, SX, DR, ST, BR, PC, MU, DP, DF, …)
+- **4 branch types** per metric: Bug, BugFX, TCC, CC
+- **5 languages**: Python, Java, C#, TypeScript, JavaScript
+- Registry-driven tool asserts with strength escalation
+- GitHub OAuth push, Testable QA whitebox, AWS S3 proofs
+- Comparison with mismatch highlighting and Excel export
 
-1. Create or open your GitHub App at [github.com/settings/apps](https://github.com/settings/apps) (e.g. **Testable Assurance Studio**)
-2. **General** → **Callback URL** = `http://localhost:8501/` (local dev)
-3. **Permissions & events** → user authorization (OAuth) + **Repository contents: Read & write**
-4. Copy **Client ID** / **Client secret** into `.env.local` (`GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_REDIRECT_URI`)
-5. Set `GITHUB_APP_SLUG` and `SCM_TOKEN_SECRET`; optionally `SCM_DB_PATH`
-6. Open **Account** in the sidebar → sign in with QA email/password
-7. Open **Branches** → click **Connect GitHub** → authorize on GitHub
-8. On the callback screen, click **View my repositories** → pick a repo → **Use this repository**
-9. Install the GitHub App on the selected repo if prompted (**Contents: Read & write**)
+## Tests
 
-Token refresh for `ghu_…` user tokens is automatic.
+```bash
+pytest tests/ -q
+python tools/e2e_browser_verify.py
+```
 
-**Multi-user:** Each browser session signs in with its own QA account. GitHub OAuth and repo selection are stored per user in `scm_connections.db` (keyed by session email). Branch push and whitebox run as that user — not a shared identity from `.env.local`.
+## License
 
-Optional server PAT: set `GITHUB_TOKEN` in `.env.local` only for unattended/CLI push when nobody is signed in. Signed-in users must connect GitHub OAuth; pushes never fall back to the shared PAT.
-
-Optional CLI only: `REPOSITORY_MATCH` in `.env.local` for notebook/CLI whitebox runs when not using the UI.
-
-## Local tools — isolated throwaway session
-
-Step 3 runs tools inside a **temporary virtual environment** per batch (default on):
-
-1. Create `tas_session_*` venv under the system temp directory
-2. Install the union of required pip packages once (coverage, pytest, radon, etc.)
-3. Run each selected branch in a subprocess using the venv Python
-4. Write `local_report.json` under `proofs/`
-5. Delete the venv and all installed tools
-
-The host Python environment is never modified. First run per batch is slower due to pip install.
-Disable via UI checkbox or set `LOCAL_TOOL_ISOLATED=false` in `.env.local`.
-
-## Credentials
-
-Copy `.env.example` to `.env.local` and fill in Testable QA + AWS S3 values.
+Internal Testable project.

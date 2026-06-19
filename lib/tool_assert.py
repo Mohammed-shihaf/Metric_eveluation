@@ -265,12 +265,58 @@ def _count_functions(target_path, language="python"):
     return len(re.findall(r"Case\d+", src))
 
 
-def _coverage_violation(pct, root):
-    """Bug branches use partial tests; resolved branches carry a fuller suite."""
-    n_tests = _count_tests(root)
+def _coverage_violation_pct(pct, n_tests):
+    """Return True when coverage measurement indicates a violation."""
+    if n_tests is None:
+        n_tests = 1
     if n_tests <= 2:
         return pct < COVERAGE_FAIL_THRESHOLD
     return pct < 15.0 and n_tests <= 2
+
+
+def _coverage_violation(pct, root):
+    """Bug branches use partial tests; resolved branches carry a fuller suite."""
+    return _coverage_violation_pct(pct, _count_tests(root))
+
+
+def metric_violation(family, values, branch_type=None, n_tests=None):
+    """Single source of truth: does metric data indicate a tool violation?"""
+    values = values or {}
+    if n_tests is None and "tests" in values:
+        try:
+            n_tests = int(values.get("tests") or 0)
+        except (TypeError, ValueError):
+            n_tests = None
+    if n_tests is None:
+        if branch_type == "Bug":
+            n_tests = 1
+        elif branch_type:
+            n_tests = 3
+        else:
+            n_tests = 1
+
+    if family in ("coverage", "crosshair", "pymcdc"):
+        return _coverage_violation_pct(float(values.get("coverage_pct", 0)), n_tests)
+    if family == "complexity":
+        return int(values.get("max_cc", 0)) > COMPLEXITY_FAIL_THRESHOLD
+    if family == "security":
+        return int(values.get("findings", 0)) > 0
+    if family == "sca":
+        return int(values.get("vulns", 0)) > 0
+    if family == "mutation":
+        ratio = float(values.get("mutation_ratio", values.get("test_fn_ratio", 1)))
+        return ratio < MUTATION_RATIO_FAIL
+    if family == "churn":
+        return float(values.get("churn_score", 0)) > CHURN_FAIL_THRESHOLD
+    if family == "duplication":
+        return float(values.get("dup_pct", 0)) > DUP_FAIL_THRESHOLD
+    if family == "lint":
+        return int(values.get("issues", 0)) > 0
+    return False
+
+
+def status_from_violation(violation):
+    return _outcome_from_bool(violation)
 
 
 def _run_coverage_pct(root, include_glob):

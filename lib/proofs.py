@@ -24,14 +24,17 @@ from lib.report_schema import (
     save_report,
 )
 from lib.sa_qa import format_task_failure_detail
-from lib.s3_sync import sync_from_taxonomy_meta
+from lib.s3_sync import sync_from_taxonomy_meta_with_retry
 from lib.taxonomy_meta import (
+    enrich_taxonomy_meta,
     failing_sections,
     failing_sections_for_branch,
     latest_taxonomy_by_branch,
     load_manifest_runs,
     load_run_summary_from_meta,
     load_taxonomy_gate_json,
+    metric_expects_s3_artifacts,
+    report_dir_from_meta,
     resolve_branch_taxonomy_meta,
 )
 
@@ -97,6 +100,56 @@ def _classification_dir_for_branch(
     )
 
 
+def format_branch_issues(info, s3_report=None):
+    """Human-readable issue lines for Stage 2 run results."""
+    issues = []
+    status = info.get("status", "")
+    if status == "ERROR":
+        issues.append("Whitebox error: %s" % (info.get("detail") or "unknown"))
+    elif status == "SKIPPED":
+        issues.append("Skipped: %s" % (info.get("detail") or "not in catalog"))
+    elif status == "NOT_COMPLETED":
+        issues.append("Not completed: %s" % (info.get("detail") or "no taxonomy report"))
+
+    run_health = info.get("run_health", "")
+    if run_health == "DEGRADED":
+        issues.append("Platform run degraded: %s" % (info.get("run_health_detail") or "task failures"))
+    elif info.get("failed_tasks"):
+        issues.append("Platform tasks: %s" % (info.get("run_health_detail") or "partial failures"))
+
+    task_failures = info.get("task_failures") or []
+    failure_detail = format_task_failure_detail(task_failures)
+    if failure_detail:
+        issues.append("Failed tasks: %s" % failure_detail)
+
+    s3_sync = info.get("s3_sync") or {}
+    sync_status = s3_sync.get("status")
+    if sync_status == "AUTH":
+        issues.append(
+            "S3 credentials expired — paste fresh AWS keys into .env.local and click Reload"
+        )
+    elif sync_status and sync_status not in ("OK", "N/A"):
+        reason = s3_sync.get("reason") or s3_sync.get("error") or ""
+        issues.append("S3 sync during run: %s%s" % (
+            sync_status,
+            (" — %s" % reason) if reason else "",
+        ))
+
+    if s3_report:
+        s3_status = s3_report.get("status", "")
+        if s3_status == "AUTH":
+            detail = (s3_report.get("extra") or {}).get("skip_reason") or s3_report.get("raw_summary") or ""
+            issues.append(
+                "S3 proof: AUTH — refresh AWS credentials in .env.local%s"
+                % ((" — %s" % detail) if detail else "")
+            )
+        elif s3_status in ("SKIPPED", "ERROR", "MISSING"):
+            detail = (s3_report.get("extra") or {}).get("skip_reason") or s3_report.get("raw_summary") or ""
+            issues.append("S3 proof: %s%s" % (s3_status, (" — %s" % detail) if detail else ""))
+
+    return issues
+
+
 def whitebox_completion(branches, taxonomy_root="taxonomy_reports", root=None, registry=None):
     """Per-branch whitebox status from taxonomy HTML + manifest."""
     from lib.registry import load_registry
@@ -131,16 +184,27 @@ def whitebox_completion(branches, taxonomy_root="taxonomy_reports", root=None, r
                     manifest_by_branch[bname] = run
 
     for bname in branches:
-        meta, _source_dir = resolve_branch_taxonomy_meta(
+        meta, source_dir = resolve_branch_taxonomy_meta(
             bname, taxonomy_root, str(repo_root), reg,
+        )
+        manifest_run = manifest_by_branch.get(bname) or {}
+        meta = enrich_taxonomy_meta(
+            meta,
+            manifest_run=manifest_run,
+            branch_name=bname,
+            classification_dir=str(source_dir) if source_dir else None,
         )
 
         html_path = meta.get("html_path", "")
-        has_taxonomy = bool(html_path and Path(html_path).is_file())
-        run_id = meta.get("run_id") or (manifest_by_branch.get(bname) or {}).get("run_id", "")
-        gate_score = (manifest_by_branch.get(bname) or {}).get("gate_score")
-        manifest_run = manifest_by_branch.get(bname) or {}
-        run_summary = load_run_summary_from_meta(meta)
+        has_html = bool(html_path and Path(html_path).is_file())
+        gate_json = load_taxonomy_gate_json(meta, classification_dir=str(source_dir) if source_dir else None)
+        gate_status = (gate_json.get("gate_status") or "").lower()
+        has_taxonomy = has_html or gate_status == "completed"
+        run_id = meta.get("run_id") or manifest_run.get("run_id", "")
+        gate_score = manifest_run.get("gate_score")
+        run_summary = load_run_summary_from_meta(
+            meta, classification_dir=str(source_dir) if source_dir else None,
+        )
         run_status = (
             run_summary.get("status")
             or manifest_run.get("status")
@@ -155,9 +219,7 @@ def whitebox_completion(branches, taxonomy_root="taxonomy_reports", root=None, r
             or run_summary.get("task_failures")
             or []
         )
-        gate_json = load_taxonomy_gate_json(meta)
-        gate_status = (gate_json.get("gate_status") or "").lower()
-        taxonomy_complete = has_taxonomy and gate_status == "completed"
+        taxonomy_complete = has_taxonomy and (has_html or gate_status == "completed")
         fail_sections = (
             failing_sections_for_branch(gate_json, bname, reg)
             if gate_json else []
@@ -216,10 +278,12 @@ def whitebox_completion(branches, taxonomy_root="taxonomy_reports", root=None, r
             "status": status,
             "detail": detail,
             "run_id": run_id,
-            "commit_sha": meta.get("commit_sha", ""),
+            "commit_sha": meta.get("commit_sha", "") or manifest_run.get("commit_sha", ""),
             "gate_score": gate_score,
             "html_path": html_path,
             "meta": meta,
+            "manifest_run": manifest_run,
+            "s3_sync": manifest_run.get("s3_sync") or {},
             "run_status": run_status,
             "total_tasks": total_tasks,
             "completed_tasks": completed_tasks,
@@ -228,8 +292,34 @@ def whitebox_completion(branches, taxonomy_root="taxonomy_reports", root=None, r
             "run_health": run_health,
             "run_health_detail": run_health_detail,
             "failing_sections": fail_sections,
+            "expects_s3": metric_expects_s3_artifacts(bname, reg),
         }
     return out
+
+
+def _report_status_label(path, usable):
+    """Human-readable report availability for compare readiness."""
+    path = Path(path)
+    if not path.is_file():
+        return "missing"
+    try:
+        report = load_report(path)
+    except Exception:
+        return "invalid"
+    status = (report.get("status") or "").upper()
+    if usable:
+        return status or "OK"
+    if status == "N/A":
+        return "N/A (expected)"
+    if status == "AUTH":
+        return "AUTH (refresh AWS creds)"
+    if status == "SKIPPED":
+        extra = report.get("extra") or {}
+        reason = extra.get("skip_reason") or report.get("raw_summary") or ""
+        if reason:
+            return "SKIPPED (%s)" % reason[:60]
+        return "SKIPPED"
+    return status or "unusable"
 
 
 def compare_readiness(branches, root=None):
@@ -272,6 +362,10 @@ def compare_readiness(branches, root=None):
             "s3": s3_ok,
             "local": local_ok,
             "sonar": sonar_ok,
+            "taxonomy_label": _report_status_label(out_dir / REPORT_TAXONOMY, tax_ok),
+            "s3_label": _report_status_label(out_dir / REPORT_S3, s3_ok),
+            "local_label": _report_status_label(out_dir / REPORT_LOCAL, local_ok),
+            "sonar_label": _report_status_label(out_dir / REPORT_SONAR, sonar_ok),
             "ready": tax_ok and s3_ok and local_ok and sonar_ok,
             "can_compare": s3_ok or local_ok,
             "missing": missing,
@@ -308,6 +402,53 @@ def _find_taxonomy_html(branch_name, taxonomy_root="taxonomy_reports", registry=
     return None, meta
 
 
+def _save_taxonomy_proof(meta, out_dir, tech, metric, branch_name, branch_type, version):
+    """Copy taxonomy HTML and write taxonomy_report.json when artifacts exist."""
+    from lib.report_schema import from_taxonomy_html, make_report, save_report
+
+    commit_sha = meta.get("commit_sha", "")
+    run_id = meta.get("run_id", "")
+    html_path = meta.get("html_path", "")
+
+    if html_path and Path(html_path).is_file():
+        _copy_taxonomy_proof(html_path, out_dir)
+        tax_report = from_taxonomy_html(
+            html_path, tech, metric, branch_name, branch_type, version,
+            commit_sha=commit_sha, run_id=run_id,
+        )
+        save_report(tax_report, out_dir / "taxonomy_report.json")
+        return tax_report
+
+    gate_json = load_taxonomy_gate_json(meta)
+    if not gate_json:
+        return None
+
+    gate_status = (gate_json.get("gate_status") or "").lower()
+    if gate_status == "completed":
+        status = "PASS"
+    elif gate_status in ("failed", "error"):
+        status = "FAIL"
+    else:
+        status = "SKIPPED"
+    tax_report = make_report(
+        technique_code=tech,
+        metric_code=metric,
+        branch_name=branch_name,
+        branch_type=branch_type,
+        version=version,
+        tool_name="taxonomy-gate",
+        source="taxonomy",
+        status=status,
+        metric_values={"gate_status": gate_status} if gate_status else {},
+        raw_summary="taxonomy gate_status=%s" % (gate_status or "missing"),
+        commit_sha=commit_sha,
+        run_id=run_id,
+        extra={"gate_json_only": True},
+    )
+    save_report(tax_report, out_dir / "taxonomy_report.json")
+    return tax_report
+
+
 def collect_s3_proof(
     branch_name,
     meta=None,
@@ -315,6 +456,10 @@ def collect_s3_proof(
     download_root=None,
     dry_run=False,
     root=None,
+    manifest_run=None,
+    expects_s3=None,
+    s3_wait_sec=None,
+    s3_poll_sec=None,
 ):
     """Sync S3 bundle (if needed) and write standard s3_report.json."""
     repo_root = Path(root or ROOT)
@@ -327,44 +472,73 @@ def collect_s3_proof(
     if meta is None:
         _, meta = _find_taxonomy_html(branch_name, taxonomy_root, root=str(repo_root))
 
-    meta = meta or {}
+    meta = enrich_taxonomy_meta(meta or {}, manifest_run=manifest_run, branch_name=branch_name)
+    meta.setdefault("branch", branch_name)
     commit_sha = meta.get("commit_sha", "")
     run_id = meta.get("run_id", "")
-    html_path = meta.get("html_path", "")
 
     out_dir = proof_dir(repo_root, tech, branch_name)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if html_path and Path(html_path).is_file():
-        _copy_taxonomy_proof(html_path, out_dir)
-        from lib.report_schema import from_taxonomy_html, save_report
+    _save_taxonomy_proof(meta, out_dir, tech, metric, branch_name, branch_type, version)
 
-        tax_report = from_taxonomy_html(
-            html_path, tech, metric, branch_name, branch_type, version,
-            commit_sha=commit_sha, run_id=run_id,
+    if expects_s3 is None:
+        expects_s3 = metric_expects_s3_artifacts(branch_name)
+
+    if not expects_s3:
+        report = make_report(
+            technique_code=tech,
+            metric_code=metric,
+            branch_name=branch_name,
+            branch_type=branch_type,
+            version=version,
+            tool_name="platform-s3",
+            source="s3",
+            status="N/A",
+            raw_summary="No platform S3 tool bundle expected for this metric (taxonomy-derived)",
+            commit_sha=commit_sha,
+            run_id=run_id,
+            extra={"skip_reason": "Metric does not publish platform S3 artifacts (emitted_directly=false)"},
         )
-        save_report(tax_report, out_dir / "taxonomy_report.json")
+        out_path = out_dir / "s3_report.json"
+        save_report(report, out_path)
+        report["_path"] = str(out_path)
+        return report
 
-    if not dry_run and commit_sha and run_id:
-        from lib.sa_qa import load_env
+    dl_root = download_root or os.environ.get("S3_DOWNLOAD_ROOT", str(repo_root / "s3_downloads"))
+    sync_summary = (manifest_run or {}).get("s3_sync") or {}
+    tool_root = None
+
+    existing_path = sync_summary.get("local_path", "")
+    if existing_path and Path(existing_path).is_dir() and any(Path(existing_path).iterdir()):
+        tool_root = existing_path
+    else:
+        tool_root = find_s3_report_path(dl_root, branch_name, commit_sha, run_id)
+
+    if not dry_run and not tool_root and commit_sha and run_id:
+        from lib.sa_qa import reload_s3_credentials
 
         env_file = repo_root / ".env.local"
         if env_file.is_file():
-            load_env(str(env_file))
+            reload_s3_credentials(str(env_file), root=str(repo_root))
         prev_active = os.environ.get("S3_SYNC_ACTIVE_BRANCHES")
         os.environ["S3_SYNC_ACTIVE_BRANCHES"] = branch_name
         try:
-            sync_summary = sync_from_taxonomy_meta(meta, dry_run=False)
+            wait_sec = s3_wait_sec if s3_wait_sec is not None else int(os.environ.get("S3_SYNC_WAIT_SEC", "90"))
+            poll_sec = s3_poll_sec if s3_poll_sec is not None else int(os.environ.get("S3_SYNC_POLL_SEC", "10"))
+            sync_summary = sync_from_taxonomy_meta_with_retry(
+                meta, wait_sec=wait_sec, poll_sec=poll_sec, dry_run=False,
+            )
         finally:
             if prev_active is not None:
                 os.environ["S3_SYNC_ACTIVE_BRANCHES"] = prev_active
             else:
                 os.environ.pop("S3_SYNC_ACTIVE_BRANCHES", None)
-    else:
-        sync_summary = None
+        if sync_summary.get("local_path") and Path(sync_summary["local_path"]).is_dir():
+            tool_root = sync_summary["local_path"]
+        if not tool_root:
+            tool_root = find_s3_report_path(dl_root, branch_name, commit_sha, run_id)
 
-    dl_root = download_root or os.environ.get("S3_DOWNLOAD_ROOT", str(repo_root / "s3_downloads"))
-    tool_root = find_s3_report_path(dl_root, branch_name, commit_sha, run_id)
     if not tool_root:
         report = from_s3_tool_root(
             str(out_dir),
@@ -378,19 +552,26 @@ def collect_s3_proof(
         )
         sync_status = (sync_summary or {}).get("status", "")
         sync_reason = (sync_summary or {}).get("reason") or (sync_summary or {}).get("error", "")
-        if sync_status == "SKIPPED" and sync_reason:
+        skip_parts = []
+        if sync_status == "AUTH":
+            report["status"] = "AUTH"
+            report["raw_summary"] = sync_reason or "AWS S3 credentials expired or invalid"
+            skip_parts.append(report["raw_summary"])
+        elif sync_status == "SKIPPED" and sync_reason:
             report["status"] = "SKIPPED"
             report["raw_summary"] = sync_reason
-            skip_parts = [sync_reason]
+            skip_parts.append(sync_reason)
         else:
             report["status"] = "SKIPPED"
-            report["raw_summary"] = "S3 bundle not found"
-            skip_parts = [
+            report["raw_summary"] = "S3 bundle not found after sync"
+            skip_parts.append(
                 "S3 bundle not found for commit=%s run=%s under %s"
                 % (commit_sha or "?", run_id or "?", dl_root)
-            ]
-            if sync_status and sync_status != "OK":
+            )
+            if sync_status and sync_status not in ("OK",):
                 skip_parts.append("sync %s: %s" % (sync_status, sync_reason or "no details"))
+        if not commit_sha or not run_id:
+            skip_parts.append("missing commit_sha or run_id in taxonomy metadata")
         report.setdefault("extra", {})["skip_reason"] = "; ".join(skip_parts)
         if sync_summary:
             report["extra"]["sync_summary"] = sync_summary
@@ -405,6 +586,8 @@ def collect_s3_proof(
             commit_sha=commit_sha,
             run_id=run_id,
         )
+        if sync_summary:
+            report.setdefault("extra", {})["sync_summary"] = sync_summary
 
     out_path = out_dir / "s3_report.json"
     save_report(report, out_path)
@@ -583,6 +766,21 @@ def collect_comparison_proof(branch_name, root=None):
     comparison = compare_four_reports(tax_report, s3_report, local_report, sonar_report)
     comparison["proof_dir"] = str(out_dir)
     comparison["missing_reports"] = missing
+    if has_local:
+        extra_local = local_report.get("extra") or {}
+        comparison["local_tool_name"] = local_report.get("tool_name", "")
+        comparison["local_executed_tool"] = extra_local.get("executed_tool", "")
+        comparison["local_real_tool"] = extra_local.get("real_tool")
+        comparison["local_raw_summary"] = local_report.get("raw_summary", "")
+        comparison["local_metric_values"] = local_report.get("metric_values") or {}
+    if has_s3:
+        extra_s3 = s3_report.get("extra") or {}
+        comparison["s3_tool_name"] = s3_report.get("tool_name", "")
+        comparison["s3_executed_tool"] = extra_s3.get("executed_tool", "")
+        comparison["s3_metric_values"] = s3_report.get("metric_values") or {}
+        comparison["s3_raw_summary"] = s3_report.get("raw_summary", "")
+        comparison["s3_executed"] = s3_report.get("status") in ("PASS", "FAIL", "WARN")
+        comparison["s3_real_tool"] = extra_s3.get("real_tool")
     out_path = out_dir / "comparison.json"
     import json
 

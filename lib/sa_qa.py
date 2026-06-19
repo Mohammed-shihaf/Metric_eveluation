@@ -42,10 +42,23 @@ BROWSER_USER_AGENT = (
 )
 
 
-def load_env(path):
+S3_AWS_ENV_KEYS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_DEFAULT_REGION",
+    "S3_BUCKET",
+    "S3_SEARCH_PREFIX",
+    "S3_DOWNLOAD_ROOT",
+    "S3_CELL_BATCH_ID",
+)
+
+
+def _parse_env_file(path):
+    """Return key -> value mapping from a dotenv-style file."""
+    out = {}
     if not os.path.isfile(path):
-        print("WARNING: env file not found: %s" % path, file=sys.stderr, flush=True)
-        return
+        return out
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -53,8 +66,43 @@ def load_env(path):
                 continue
             key, val = line.split("=", 1)
             k, v = key.strip(), val.strip()
-            if k and (k not in os.environ or not str(os.environ.get(k, "")).strip()):
-                os.environ[k] = v
+            if k:
+                out[k] = v
+    return out
+
+
+def load_env(path, override=False):
+    if not os.path.isfile(path):
+        print("WARNING: env file not found: %s" % path, file=sys.stderr, flush=True)
+        return
+    parsed = _parse_env_file(path)
+    for k, v in parsed.items():
+        if override or k not in os.environ or not str(os.environ.get(k, "")).strip():
+            os.environ[k] = v
+
+
+def reload_env_keys(path, keys, override=True):
+    """Re-read selected keys from an env file into os.environ."""
+    if not os.path.isfile(path):
+        print("WARNING: env file not found: %s" % path, file=sys.stderr, flush=True)
+        return 0
+    parsed = _parse_env_file(path)
+    key_set = frozenset(keys) if keys else None
+    updated = 0
+    for k, v in parsed.items():
+        if key_set is not None and k not in key_set:
+            continue
+        if override or k not in os.environ or not str(os.environ.get(k, "")).strip():
+            os.environ[k] = v
+            updated += 1
+    return updated
+
+
+def reload_s3_credentials(path=None, root=None):
+    """Force-reload AWS/S3 keys from .env.local after pasting fresh STS credentials."""
+    repo_root = root or ROOT
+    env_path = path or os.path.join(repo_root, ".env.local")
+    return reload_env_keys(env_path, S3_AWS_ENV_KEYS, override=True)
 
 
 class PlatformClient(object):
@@ -1644,6 +1692,7 @@ def main_with_args(args, progress_callback=None, result_meta=None):
                 "branch": branch_name,
                 "report_folder": report_folder,
                 "run_id": run_id,
+                "commit_sha": commit_sha,
                 "status": summary.get("status"),
                 "run_status": (summary.get("status") or "").lower(),
                 "total_tasks": summary.get("total_tasks") or 0,
@@ -1656,13 +1705,15 @@ def main_with_args(args, progress_callback=None, result_meta=None):
                 "branch": branch_name,
                 "commit_sha": commit_sha,
                 "run_id": run_id,
-                "html_path": os.path.join(output_dir, report_folder),
+                "report_folder": report_folder,
+                "report_dir": os.path.join(output_dir, report_folder),
             }
             s3_wait = int(os.environ.get("S3_SYNC_WAIT_SEC", "60"))
             s3_poll = int(os.environ.get("S3_SYNC_POLL_SEC", "10"))
             try:
                 from lib.s3_sync import sync_from_taxonomy_meta_with_retry
 
+                reload_s3_credentials(args.env_file)
                 s3_sync = sync_from_taxonomy_meta_with_retry(
                     s3_meta, wait_sec=s3_wait, poll_sec=s3_poll,
                 )
@@ -1672,11 +1723,17 @@ def main_with_args(args, progress_callback=None, result_meta=None):
                     "local_path": s3_sync.get("local_path", ""),
                     "s3_prefix": s3_sync.get("s3_prefix", ""),
                 }
-                print(
-                    "  s3 sync: status=%s %s"
-                    % (s3_sync.get("status"), s3_sync.get("reason") or s3_sync.get("local_path", "")),
-                    flush=True,
-                )
+                if s3_sync.get("status") == "AUTH":
+                    print(
+                        "  s3 sync: AUTH — refresh AWS creds in .env.local",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        "  s3 sync: status=%s %s"
+                        % (s3_sync.get("status"), s3_sync.get("reason") or s3_sync.get("local_path", "")),
+                        flush=True,
+                    )
             except Exception as exc:
                 run_entry["s3_sync"] = {"status": "ERROR", "reason": str(exc)}
                 print("  s3 sync failed: %s" % exc, flush=True)

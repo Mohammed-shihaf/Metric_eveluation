@@ -15,14 +15,68 @@ from lib.branch_post_verify import verify_generated_branch
 from lib.github_api import fetch_branch_source, push_branch_to_github, read_remote_text
 from lib.github_auth import check_app_repo_access, _token_kind
 from lib.lang_generators.base import effective_strength
+from lib.lang_support import default_runtime, normalize_language, normalize_runtime
 from lib.lang_generators import write_branch
 from lib.python_generator import generate_branch_files, read_gen_meta
-from lib.registry import iter_branches
+from lib.registry import iter_branches, package_name
 from lib.tool_map import metric_tool, pip_packages_for_family, pip_packages_for_primary
 from lib.lang_tool_runners import packages_for_language
 
 
 STALL_ROUNDS_LIMIT = 3
+
+
+def _branch_language(branch_dir, language=None):
+    if language:
+        return normalize_language(language)
+    meta = read_gen_meta(branch_dir)
+    return normalize_language(meta.get("language") or "python")
+
+
+def _branch_runtime(branch_dir, language=None, runtime=None):
+    if runtime:
+        lang = normalize_language(language or _branch_language(branch_dir))
+        return normalize_runtime(lang, runtime)
+    meta = read_gen_meta(branch_dir)
+    lang = normalize_language(language or meta.get("language") or "python")
+    return normalize_runtime(lang, meta.get("runtime") or default_runtime(lang))
+
+
+def branch_materialized(branch_dir, technique_code, language=None):
+    """True when a branch directory contains generated source (not just .git metadata)."""
+    branch_dir = os.path.abspath(branch_dir or "")
+    if not branch_dir or not os.path.isdir(branch_dir):
+        return False
+    lang = _branch_language(branch_dir, language)
+    pkg = package_name(technique_code)
+    paths = {
+        "python": os.path.join(branch_dir, pkg, "config.py"),
+        "java": os.path.join(branch_dir, "src/main/java/com/testable/%s/Config.java" % pkg.lower()),
+        "javascript": os.path.join(branch_dir, pkg.lower(), "config.js"),
+        "typescript": os.path.join(branch_dir, pkg.lower(), "config.ts"),
+        "csharp": os.path.join(branch_dir, "src", pkg, "Config.cs"),
+    }
+    return os.path.isfile(paths.get(lang) or paths["python"])
+
+
+def strip_incomplete_branch_dir(branch_dir):
+    """Remove empty or git-only branch folders so fetch/generate can repopulate them."""
+    branch_dir = os.path.abspath(branch_dir or "")
+    if not branch_dir or not os.path.isdir(branch_dir):
+        return False
+    if branch_materialized(branch_dir, _technique_from_dir(branch_dir)):
+        return False
+    shutil.rmtree(branch_dir, ignore_errors=True)
+    return True
+
+
+def _technique_from_dir(branch_dir):
+    """Best-effort technique code from a branch folder name."""
+    from lib.metrics import parse_branch_name
+
+    folder = os.path.basename(os.path.normpath(branch_dir))
+    parsed = parse_branch_name(folder)
+    return (parsed or {}).get("tech") or folder.split("_", 1)[0]
 
 
 def _deadline_passed(deadline):
@@ -52,19 +106,21 @@ def hydrate_gen_rows_from_work(work_root, techniques, metrics, types, version):
     rows = []
     for tech, metric, bt, bname in iter_branches(techniques, metrics, types, version):
         branch_dir = os.path.join(work_root, bname)
-        if os.path.isdir(branch_dir):
-            meta = read_gen_meta(branch_dir)
-            rows.append({
-                "branch_name": bname,
-                "technique_code": tech,
-                "metric_code": metric,
-                "branch_type": bt,
-                "dir": branch_dir,
-                "generated": True,
-                "error": "",
-                "strength": meta.get("strength", 0),
-                "loc": meta.get("loc"),
-            })
+        if not os.path.isdir(branch_dir):
+            continue
+        materialized = branch_materialized(branch_dir, tech)
+        meta = read_gen_meta(branch_dir) if materialized else {}
+        rows.append({
+            "branch_name": bname,
+            "technique_code": tech,
+            "metric_code": metric,
+            "branch_type": bt,
+            "dir": branch_dir,
+            "generated": materialized,
+            "error": "" if materialized else "incomplete local copy (missing source files)",
+            "strength": meta.get("strength", 0),
+            "loc": meta.get("loc"),
+        })
     return rows
 
 
@@ -273,7 +329,9 @@ def ensure_local_branches(
     for tech, metric, bt, bname in iter_branches(techniques, metrics, types, version):
         branch_dir = os.path.join(work_root, bname)
         if os.path.isdir(branch_dir):
-            continue
+            if branch_materialized(branch_dir, tech):
+                continue
+            strip_incomplete_branch_dir(branch_dir)
         on_github = push_by.get(bname, {}).get("on_github") == "yes"
         if not on_github:
             continue
@@ -355,9 +413,10 @@ def _install_packages(packages):
         return False, str(exc)
 
 
-def _fix_branch(tech, metric, bt, version, language, branch_path, auto_install, strength=0):
+def _fix_branch(tech, metric, bt, version, language, branch_path, auto_install, strength=0, runtime=None):
     """Regenerate one branch with escalating strength and optionally install tools."""
-    write_branch(branch_path, tech, metric, bt, version, language, strength=strength)
+    rt = _branch_runtime(branch_path, language, runtime)
+    write_branch(branch_path, tech, metric, bt, version, language, strength=strength, runtime=rt)
     notes = ["regenerated strength=%d" % strength]
     if not auto_install:
         return "; ".join(notes)
@@ -394,6 +453,7 @@ def generate_branches(
     branch_names_filter=None,
     max_fix_attempts=3,
     auto_install=True,
+    runtime=None,
 ):
     """Write in-scope branches to work_root/<branch_name>."""
     work_root = os.path.abspath(work_root)
@@ -415,6 +475,9 @@ def generate_branches(
     stopped_at = None
     stop_reason = None
     stop_cause = None
+
+    lang = normalize_language(language)
+    rt = normalize_runtime(lang, runtime or default_runtime(lang))
 
     for idx, (tech, metric, bt, bname) in enumerate(planned, start=1):
         if _deadline_passed(deadline):
@@ -438,7 +501,7 @@ def generate_branches(
         _progress("generate", "writing branch files (strength=%d)" % strength)
         try:
             _bname, loc = write_branch(
-                branch_dir, tech, metric, bt, version, language, strength=strength,
+                branch_dir, tech, metric, bt, version, lang, strength=strength, runtime=rt,
             )
             meta = read_gen_meta(branch_dir)
             _progress("verify", "structure, import, pytest")
@@ -447,7 +510,7 @@ def generate_branches(
                 _progress(step, msg)
 
             vr = verify_generated_branch(
-                branch_dir, tech, metric, bt, version, language,
+                branch_dir, tech, metric, bt, version, lang,
                 progress_callback=_verify_cb,
             )
             if not vr.get("ok") and max_fix_attempts:
@@ -459,13 +522,13 @@ def generate_branches(
                         % (fix_strength, attempt, int(max_fix_attempts)),
                     )
                     _fix_branch(
-                        tech, metric, bt, version, language, branch_dir,
-                        auto_install, strength=fix_strength,
+                        tech, metric, bt, version, lang, branch_dir,
+                        auto_install, strength=fix_strength, runtime=rt,
                     )
                     meta = read_gen_meta(branch_dir)
                     strength = meta.get("strength", fix_strength)
                     vr = verify_generated_branch(
-                        branch_dir, tech, metric, bt, version, language,
+                        branch_dir, tech, metric, bt, version, lang,
                         progress_callback=_verify_cb,
                     )
                     if vr.get("ok"):
@@ -499,6 +562,8 @@ def generate_branches(
                 "error": "",
                 "strength": meta.get("strength", strength),
                 "loc": verified_loc,
+                "language": lang,
+                "runtime": meta.get("runtime") or rt,
             })
             _progress("verify", "strength=%d, %d LOC — %s" % (
                 meta.get("strength", strength),
@@ -568,7 +633,12 @@ def validate_branches(
     deadline=None,
 ):
     """Run assert validation with fix-until-pass loop per branch."""
-    rows_in = [r for r in (gen_rows or []) if r.get("generated") and r.get("dir")]
+    rows_in = []
+    for r in (gen_rows or []):
+        branch_dir = r.get("dir")
+        if not branch_dir or not os.path.isdir(branch_dir):
+            continue
+        rows_in.append(r)
     total = len(rows_in)
     rows = []
     validated = []
@@ -637,6 +707,10 @@ def validate_branches(
             base_strength = max(0, int(gen.get("strength") or 0))
         except (TypeError, ValueError):
             base_strength = 0
+        if not branch_materialized(branch_dir, tech, language):
+            _progress("fix", "repopulating incomplete branch directory")
+            _fix_branch(tech, metric, bt, version, language, branch_dir, auto_install, strength=base_strength)
+
         assert_row = assert_branch_full(
             branch_dir, tech, metric, bt, version, language, require_real_tool=True,
         )
@@ -781,6 +855,7 @@ def validate_with_regeneration(
                 version,
                 language,
                 strength=new_strength,
+                runtime=_branch_runtime(g["dir"], language),
             )
             meta = read_gen_meta(g["dir"])
             g["strength"] = meta.get("strength", new_strength)
@@ -954,6 +1029,21 @@ def push_branches(
             bname = row["branch_name"]
             branch_dir = row["dir"]
 
+            if not branch_materialized(branch_dir, tech):
+                out = dict(row)
+                out.update({
+                    "pushed": False,
+                    "failure_reason": "branch directory incomplete (missing source files); re-validate or regenerate",
+                    "push_method": push_method,
+                })
+                rows.append(out)
+                failed.append(bname)
+                if stopped_at is None:
+                    stopped_at = bname
+                    stop_reason = out["failure_reason"]
+                _progress("push", "skipped: incomplete branch dir")
+                continue
+
             def _progress(step, msg):
                 if progress_callback:
                     progress_callback(step, idx - 1, total, bname, msg)
@@ -962,9 +1052,10 @@ def push_branches(
             meta = read_gen_meta(branch_dir)
             gen_strength = int(meta.get("strength", 0) or 0)
             gen_version = (meta.get("version") or "2.6").strip() or "2.6"
-            gen_language = (meta.get("language") or "python").strip() or "python"
+            gen_language = normalize_language(meta.get("language") or "python")
+            gen_runtime = _branch_runtime(branch_dir, gen_language, meta.get("runtime"))
             files = generate_branch_files(
-                tech, metric, bt, gen_version, gen_language, strength=gen_strength,
+                tech, metric, bt, gen_version, gen_language, strength=gen_strength, runtime=gen_runtime,
             )
             commit_sha, push_err, _method = push_branch_to_github(
                 token,
