@@ -3302,6 +3302,7 @@ def _tab_local_tools(filters):
                         isolated=run_isolated,
                         github_config=_github_push_config() if _github_creds_ready() else None,
                         local_root=work_root,
+                        language=filters["language"],
                     )
             except Exception as exc:
                 panel.set_result("error", "failed")

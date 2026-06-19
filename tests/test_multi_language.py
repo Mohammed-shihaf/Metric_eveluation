@@ -2,6 +2,7 @@
 
 from __future__ import print_function
 
+import json
 import os
 import shutil
 import tempfile
@@ -9,8 +10,15 @@ import unittest
 
 from lib.branch_pipeline import branch_materialized, generate_branches
 from lib.branch_post_verify import verify_generated_branch
-from lib.lang_support import default_runtime, language_runtimes, normalize_runtime
+from lib.lang_support import (
+    branch_language,
+    branch_language_by_name,
+    default_runtime,
+    language_runtimes,
+    normalize_runtime,
+)
 from lib.lang_generators import write_branch
+from lib.lang_tool_runners import toolchain_available
 from lib.registry_tools import get_metric_tools, SUPPORTED_UI_LANGUAGES
 
 
@@ -23,6 +31,41 @@ class LangSupportTests(unittest.TestCase):
 
     def test_normalize_runtime_fallback(self):
         self.assertEqual(normalize_runtime("java", "99"), default_runtime("java"))
+
+    def test_branch_language_from_gen_meta(self):
+        base = tempfile.mkdtemp(prefix="ml_lang_")
+        try:
+            root = os.path.join(base, "branch")
+            os.makedirs(root)
+            meta = {"language": "java", "runtime": "17"}
+            with open(os.path.join(root, ".gen_meta.json"), "w", encoding="utf-8") as fh:
+                json.dump(meta, fh)
+            self.assertEqual(branch_language(root), "java")
+            self.assertEqual(branch_language(root, fallback="python"), "java")
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_branch_language_by_name_fallback(self):
+        repo = tempfile.mkdtemp(prefix="ml_repo_")
+        try:
+            by_name = branch_language_by_name(["Missing_Branch"], repo, fallback="csharp")
+            self.assertEqual(by_name["Missing_Branch"], "csharp")
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+
+
+class ToolchainAvailabilityTests(unittest.TestCase):
+    def test_toolchain_python_always_available(self):
+        ok, _msg = toolchain_available("python")
+        self.assertTrue(ok)
+
+    def test_toolchain_returns_tuple(self):
+        for lang in SUPPORTED_UI_LANGUAGES:
+            result = toolchain_available(lang)
+            self.assertIsInstance(result, tuple)
+            self.assertEqual(len(result), 2)
+            self.assertIsInstance(result[0], bool)
+            self.assertIsInstance(result[1], str)
 
 
 class RegistryToolsMultiLangTests(unittest.TestCase):

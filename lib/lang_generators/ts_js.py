@@ -84,7 +84,7 @@ def _assemble_js_like_files(tech, metric, technique_code, metric_code, branch_ty
         "name": pkg,
         "version": "1.0.0",
         "type": "commonjs" if ext == "ts" else "module",
-        "scripts": {"test": "node tests/run.js"},
+        "scripts": {"test": "node node_modules/typescript/bin/tsc -p tsconfig.json && node tests/run.js"},
         "engines": {"node": ">=%s.0.0" % node_major},
     }
     if ext == "ts":
@@ -110,9 +110,7 @@ def _assemble_js_like_files(tech, metric, technique_code, metric_code, branch_ty
     for i in range(1, n_fn + 1):
         body.append(_case_method(prefix, i, variant, family, technique_code, strength, ext))
     exports = ", ".join("%sCase%d" % (prefix, i) for i in range(1, min(n_fn, 12) + 1))
-    if ext == "ts":
-        body.append("export { %s };\n" % exports)
-    else:
+    if ext != "ts":
         body.append("export { %s };\n" % exports)
     files["%s/%s.%s" % (pkg, module, ext)] = "\n".join(body)
 

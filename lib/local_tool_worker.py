@@ -22,6 +22,7 @@ def main():
     p.add_argument("--metric", required=True)
     p.add_argument("--type", required=True)
     p.add_argument("--version", default="2.6")
+    p.add_argument("--language", default="")
     p.add_argument("--commit-sha", default="")
     p.add_argument("--run-id", default="")
     p.add_argument(
@@ -33,12 +34,17 @@ def main():
 
     from lib.local_tool_runner import run_local_tool_report
 
+    from lib.lang_support import branch_language, normalize_language
+
+    lang = normalize_language(args.language or branch_language(args.branch_path))
+
     report = run_local_tool_report(
         args.branch_path,
         args.technique,
         args.metric,
         args.type,
         args.version,
+        language=lang,
         commit_sha=args.commit_sha or None,
         run_id=args.run_id or None,
         install=False,

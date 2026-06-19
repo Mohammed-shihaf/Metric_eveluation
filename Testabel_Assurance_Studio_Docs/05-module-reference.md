@@ -211,8 +211,20 @@ Regenerate summary: see [METRICS_REGISTRY_SUMMARY.md](METRICS_REGISTRY_SUMMARY.m
 2. Register in `lib/lang_generators/template_core.py`
 3. Add runtime catalog to `lib/lang_support.py`
 4. Add `branch_materialized()` path in `branch_pipeline.py`
-5. Add post-verify in `lib/branch_post_verify.py`
-6. Add tests in `tests/test_multi_language.py`
+5. Add post-verify in `lib/branch_post_verify.py` (syntax + language test suite)
+6. Add native runner in `lib/lang_tool_runners.py` with `toolchain_available()` gate
+7. Thread language via `lib/lang_support.branch_language()` in local-tools / proofs paths
+8. Add tests in `tests/test_multi_language.py`
+
+### Language threading (local tools)
+
+| Module | Behavior |
+|--------|----------|
+| `lang_support.branch_language()` | Read language from `.gen_meta.json` |
+| `proofs.collect_local_batch()` | Accept `language` hint; auto-detect per branch |
+| `local_tool_runner.run_local_tool_batch_isolated()` | Per-branch language for venv/npm/Maven blockers |
+| `local_tool_worker.py` | `--language` forwarded to `run_local_tool_report()` |
+| `report_schema.from_tool_assert_result()` | Language-aware primary tool family mapping |
 
 ### Add a new tool family
 

@@ -119,7 +119,7 @@ def _parse_metric_values_from_raw(raw_summary):
     return values
 
 
-def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None, version=None):
+def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None, version=None, language=None):
     """Convert tool_assert_branch() output into the standard schema."""
     branch_name = result.get("branch_name", "")
     technique_code = result.get("technique_code", "")
@@ -128,6 +128,8 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
     raw = result.get("raw_metric_value", "")
 
     extra = {}
+    if language:
+        extra["language"] = language
     if result.get("log"):
         extra["tool_log"] = result.get("log")
     if "real_tool" in result:
@@ -137,7 +139,7 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
         extra["tool_unavailable"] = result.get("message", "")
         norm_status = "UNAVAILABLE"
         metric_values = {}
-        family = _tool_family_for_metric(technique_code, metric_code) if technique_code else ""
+        family = _tool_family_for_metric(technique_code, metric_code, language=language) if technique_code else ""
         raw = raw or result.get("message", "")
     elif result.get("status") == "SKIPPED" and result.get("message"):
         extra["skip_reason"] = result.get("message")
@@ -152,7 +154,7 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
         raw = raw or result.get("message", "")
     else:
         metric_values = _parse_metric_values_from_raw(raw)
-        family = _tool_family_for_metric(technique_code, metric_code)
+        family = _tool_family_for_metric(technique_code, metric_code, language=language)
         tool_outcome = str(result.get("tool_outcome") or "").upper()
         real_tool = result.get("real_tool")
         if real_tool is None:
@@ -219,14 +221,22 @@ def from_tool_assert_result(result, source="local", commit_sha=None, run_id=None
     )
 
 
-def _tool_family_for_metric(technique_code, metric_code):
+def _tool_family_for_metric(technique_code, metric_code, language=None):
     from lib.registry import metric_entry
     from lib.tool_assert import tool_family
+    from lib.lang_support import normalize_language
 
     try:
         tech, metric = metric_entry(technique_code, metric_code)
-        tools = (metric.get("tools") or {}).get("python", {})
+        lang = normalize_language(language or "python")
+        tools = (metric.get("tools") or {}).get(lang) or (metric.get("tools") or {}).get("python", {})
         primary = (tools.get("primary") or "").strip()
+        if not primary:
+            from lib.registry_tools import LANGUAGE_FAMILY_PRIMARY
+            py_primary = ((metric.get("tools") or {}).get("python") or {}).get("primary", "")
+            fam = tool_family(py_primary, tech["technique_code"]) if py_primary else "complexity"
+            defaults = LANGUAGE_FAMILY_PRIMARY.get(lang) or LANGUAGE_FAMILY_PRIMARY["python"]
+            primary = defaults.get(fam, py_primary or "tool")
         return tool_family(primary, tech["technique_code"])
     except (KeyError, TypeError):
         return ""

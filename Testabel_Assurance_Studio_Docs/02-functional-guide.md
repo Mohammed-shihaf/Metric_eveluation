@@ -217,15 +217,23 @@ Each branch expander shows:
 
 Selecting a non-Python language changes codegen output:
 
-| Language | Project layout | Test framework |
-|----------|----------------|----------------|
-| Python | `pkg/config.py`, pytest | pytest + coverage |
-| Java | Maven `src/main/java`, JUnit 5 | JUnit 5 |
-| C# | `.csproj`, xUnit | xUnit + coverlet |
-| TypeScript | `package.json`, tsconfig | Jest + c8/nyc |
-| JavaScript | `package.json` | Jest |
+| Language | Project layout | Test framework | Local tool runner |
+|----------|----------------|----------------|-------------------|
+| Python | `pkg/config.py`, pytest | pytest + coverage | pip venv + native CLIs |
+| Java | Maven `src/main/java`, JUnit 5 | `mvn test` | JaCoCo, PMD, SpotBugs, PIT (when Maven present) |
+| C# | `.csproj`, xUnit | `dotnet test` | coverlet, SecurityCodeScan, Stryker.NET (when SDK present) |
+| TypeScript | `package.json`, tsconfig | `tsc` + node runner | eslint, nyc/c8 (when Node present) |
+| JavaScript | `package.json` | node test runner | eslint, nyc/c8, jscpd (when Node present) |
 
 Runtime version is stored in `.gen_meta.json` and branch config as `RUNTIME_VERSION`.
+
+Language is auto-detected per branch from `.gen_meta.json` throughout validate, local-tools, whitebox, and compare. The sidebar **Language** filter is a fallback hint when metadata is missing.
+
+### Native tool execution
+
+Local tool asserts no longer require `RUN_NATIVE_BUILD=1`. When a host toolchain is present (`toolchain_available()`), real native tools run and results include `real_tool: true`. When a toolchain is absent, checks return **SKIPPED** (structural surrogate) — never a false pass.
+
+Post-generation verify runs language test suites when toolchains are available (`mvn test`, `dotnet test`, node tests). Missing toolchains skip the test gate gracefully.
 
 Language caption under sidebar confirms generate/validate/whitebox readiness per language.
 

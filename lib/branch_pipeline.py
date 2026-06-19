@@ -15,7 +15,7 @@ from lib.branch_post_verify import verify_generated_branch
 from lib.github_api import fetch_branch_source, push_branch_to_github, read_remote_text
 from lib.github_auth import check_app_repo_access, _token_kind
 from lib.lang_generators.base import effective_strength
-from lib.lang_support import default_runtime, normalize_language, normalize_runtime
+from lib.lang_support import branch_language, default_runtime, normalize_language, normalize_runtime
 from lib.lang_generators import write_branch
 from lib.python_generator import generate_branch_files, read_gen_meta
 from lib.registry import iter_branches, package_name
@@ -27,10 +27,7 @@ STALL_ROUNDS_LIMIT = 3
 
 
 def _branch_language(branch_dir, language=None):
-    if language:
-        return normalize_language(language)
-    meta = read_gen_meta(branch_dir)
-    return normalize_language(meta.get("language") or "python")
+    return branch_language(branch_dir, fallback=language or "python")
 
 
 def _branch_runtime(branch_dir, language=None, runtime=None):

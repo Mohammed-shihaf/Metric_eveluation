@@ -603,6 +603,7 @@ def collect_local_proof(
     meta=None,
     github_config=None,
     local_root=None,
+    language=None,
 ):
     """Run local tool and write standard local_report.json."""
     repo_root = Path(root or ROOT)
@@ -626,12 +627,16 @@ def collect_local_proof(
         ref=commit_sha or branch_name,
         local_root=local_root,
     ) as branch_path:
+        from lib.lang_support import branch_language, normalize_language
+
+        lang = normalize_language(language or branch_language(branch_path))
         report = run_local_tool_report(
             branch_path,
             tech,
             metric,
             branch_type,
             version,
+            language=lang,
             commit_sha=commit_sha,
             run_id=run_id,
             install=install,
@@ -801,6 +806,7 @@ def collect_local_batch(
     isolated=None,
     github_config=None,
     local_root=None,
+    language=None,
 ):
     """Run local tools for an explicit branch list."""
     repo_root = Path(root or ROOT)
@@ -842,6 +848,7 @@ def collect_local_batch(
             progress_callback=progress_callback,
             github_config=github_config,
             local_root=local_root,
+            language=language,
         )
         report_by_branch = {r.get("branch_name"): r for r in reports}
         for idx, (bname, _) in enumerate(runnable, start=1):
@@ -877,6 +884,7 @@ def collect_local_batch(
                 meta=meta,
                 github_config=github_config,
                 local_root=local_root,
+                language=language,
             )
             row["local_report"] = report
             row["status"] = report.get("status", "OK")

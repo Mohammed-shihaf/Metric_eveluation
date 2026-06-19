@@ -44,6 +44,20 @@ Primary tool strings from the registry are normalized into families:
 
 When the primary CLI is unavailable, the check is **SKIPPED** (never silently passed or failed).
 
+## Multi-language tool runners
+
+Non-Python branches use the same tool-assert pipeline as Python. Language is resolved from `.gen_meta.json` via `branch_language()`.
+
+| Language | Native tools (when toolchain present) | Fallback |
+|----------|---------------------------------------|----------|
+| Java | JaCoCo, PMD/Checkstyle, SpotBugs, CPD, PIT, `mvn test` | Structural surrogate → SKIPPED |
+| C# | coverlet, `dotnet build` warnings, SecurityCodeScan, Stryker.NET, `dotnet test` | Structural surrogate → SKIPPED |
+| TypeScript / JavaScript | eslint, nyc/c8, jscpd, Stryker, npm audit | Structural surrogate → SKIPPED |
+
+**Auto-detect:** `RUN_NATIVE_BUILD` is no longer required. `lang_tool_runners.toolchain_available()` decides whether to invoke real CLIs. Results include `real_tool: true` when a native runner succeeds.
+
+**Isolated local-tools batch:** The worker receives `--language`; pip venv is used only for Python branches. JS/TS branches run `npm install` in the branch directory when needed.
+
 ## Per-technique nuance: SX, DR, MU, DP
 
 These four groups use conceptually different defect models. Tool-assert semantics are explicit:

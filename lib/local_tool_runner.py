@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 from lib.github_api import materialize_branch
+from lib.lang_support import branch_language, branch_language_by_name, normalize_language
 from lib.registry import iter_branches
 from lib.report_schema import from_tool_assert_result, save_report
 from lib.tool_map import metric_tool, pip_packages_for_family, pip_packages_for_primary, all_tool_packages
@@ -157,26 +158,38 @@ def _pytest_ready():
         return False
 
 
-def ensure_tool_installed(technique_code, metric_code, language="python"):
+def ensure_tool_installed(technique_code, metric_code, language="python", branch_path=None):
     """Install packages required for the metric's registry primary tool."""
-    lang = (language or "python").strip().lower()
+    lang = normalize_language(language or "python")
     from lib.tool_map import metric_tool
 
     info = metric_tool(technique_code, metric_code, lang)
     if lang != "python":
-        from lib.lang_tool_runners import packages_for_language
+        from lib.lang_tool_runners import packages_for_language, toolchain_available
+
         pkgs = packages_for_language(info["family"], info["primary"], lang)
-        if not pkgs or pkgs == ["dotnet-sdk"] or pkgs == ["maven"]:
-            return True, "structural %s validation (host toolchain optional)" % lang
-        if lang in ("javascript", "typescript") and shutil.which("npm"):
+        ok, detail = toolchain_available(lang)
+        if not ok:
+            return False, detail
+        if lang in ("javascript", "typescript") and pkgs and shutil.which("npm"):
+            cwd = branch_path if branch_path and os.path.isdir(branch_path) else None
             cmd = ["npm", "install", "--no-save", "--silent"] + pkgs
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
+                proc = subprocess.run(
+                    cmd,
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                )
                 if proc.returncode != 0:
                     return False, (proc.stderr or proc.stdout or "npm install failed").strip()
                 return True, "installed npm: %s" % ", ".join(pkgs)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 return False, str(exc)
+        if lang in ("java", "csharp"):
+            return True, "%s toolchain ready (%s)" % (lang, info.get("primary", ""))
         return True, "structural %s validation" % lang
 
     packages = pip_packages_for_primary(
@@ -238,8 +251,10 @@ def run_local_tool_report(
     branch_type = branch_type or parsed["type"]
     version = version or parsed["version"]
 
+    lang = normalize_language(language or branch_language(branch_path))
+
     if install:
-        ok, msg = ensure_tool_installed(technique_code, metric_code, language)
+        ok, msg = ensure_tool_installed(technique_code, metric_code, lang, branch_path=branch_path)
         install_msg = msg
         if not ok:
             from lib.report_schema import make_report
@@ -261,7 +276,7 @@ def run_local_tool_report(
     else:
         install_msg = ""
 
-    tool_info = metric_tool(technique_code, metric_code, language)
+    tool_info = metric_tool(technique_code, metric_code, lang)
     registry_primary = (tool_info.get("primary") or "").strip()
 
     assert_result = tool_assert_branch(
@@ -269,7 +284,7 @@ def run_local_tool_report(
         technique_code,
         metric_code,
         branch_type,
-        language,
+        lang,
         require_real_tool=require_real_tool,
     )
     report = from_tool_assert_result(
@@ -278,6 +293,7 @@ def run_local_tool_report(
         commit_sha=commit_sha,
         run_id=run_id,
         version=version,
+        language=lang,
     )
     extra = dict(report.get("extra") or {})
     executed = assert_result.get("tool_used", "")
@@ -324,32 +340,30 @@ def run_local_tool_report(
     return report
 
 
-def required_packages_for_branches(branch_names, language="python"):
-    """Union of pip packages for each branch's registry primary tool."""
+def required_packages_for_branches(branch_names, language=None, language_by_branch=None, repo_root=None, local_root=None):
+    """Union of pip packages for each branch's registry primary tool (Python branches only)."""
     from lib.metrics import parse_branch_name
     from lib.lang_tool_runners import packages_for_language
 
-    lang = (language or "python").strip().lower()
+    repo_root = repo_root or ROOT
+    if language_by_branch is None:
+        language_by_branch = branch_language_by_name(
+            branch_names, repo_root, local_root=local_root, fallback=language or "python",
+        )
     packages = []
     for bname in branch_names:
         parsed = parse_branch_name(bname)
         if not parsed:
             continue
+        lang = normalize_language(language_by_branch.get(bname) or language or "python")
         info = metric_tool(parsed["tech"], parsed["metric"], lang)
-        if lang == "python":
-            pkgs = pip_packages_for_primary(
-                info.get("primary", ""),
-                info.get("family", ""),
-                parsed["tech"],
-            )
-        else:
-            pkgs = packages_for_language(info["family"], info["primary"], lang)
-            if not pkgs:
-                pkgs = pip_packages_for_primary(
-                    info.get("primary", ""),
-                    info.get("family", ""),
-                    parsed["tech"],
-                )
+        if lang != "python":
+            continue
+        pkgs = pip_packages_for_primary(
+            info.get("primary", ""),
+            info.get("family", ""),
+            parsed["tech"],
+        )
         packages.extend(pkgs)
     return list(dict.fromkeys(packages))
 
@@ -381,6 +395,7 @@ def _run_worker_for_branch(
     version,
     commit_sha,
     run_id,
+    language="python",
     require_real_tool=True,
 ):
     """Launch venv worker subprocess; return (report_dict, worker_log)."""
@@ -398,6 +413,8 @@ def _run_worker_for_branch(
         bt,
         "--version",
         version,
+        "--language",
+        normalize_language(language or branch_language(branch_path)),
     ]
     if require_real_tool:
         cmd.append("--require-real-tool")
@@ -449,6 +466,8 @@ def run_local_tool_batch_isolated(
     progress_callback=None,
     github_config=None,
     local_root=None,
+    language=None,
+    language_by_branch=None,
 ):
     """Run local tools in a persistent or throwaway venv; only reports persist on disk."""
     from lib.metrics import infer_from_branch_name, parse_branch_name
@@ -460,6 +479,10 @@ def run_local_tool_batch_isolated(
     repo_root = root or ROOT
     commit_sha_by_branch = commit_sha_by_branch or {}
     run_id_by_branch = run_id_by_branch or {}
+    if language_by_branch is None:
+        language_by_branch = branch_language_by_name(
+            branches, repo_root, local_root=local_root, fallback=language or "python",
+        )
     total = len(branches)
     reports = []
     session = None
@@ -468,7 +491,21 @@ def run_local_tool_batch_isolated(
     persistent = _persistent_env_enabled()
 
     try:
-        packages = list(dict.fromkeys(required_packages_for_branches(branches) + all_tool_packages()))
+        packages = list(dict.fromkeys(
+            required_packages_for_branches(
+                branches,
+                language=language,
+                language_by_branch=language_by_branch,
+                repo_root=repo_root,
+                local_root=local_root,
+            ) + all_tool_packages()
+        ))
+        has_python = any(
+            normalize_language(language_by_branch.get(b, language or "python")) == "python"
+            for b in branches
+        )
+        if not has_python:
+            packages = []
 
         if progress_callback:
             progress_callback(
@@ -480,16 +517,24 @@ def run_local_tool_batch_isolated(
             )
 
         if persistent:
-            session = ensure_tool_env(packages)
+            if packages:
+                session = ensure_tool_env(packages)
+            else:
+                session = {"python_exe": sys.executable, "env": os.environ.copy(), "install_result": install_result}
             install_result = session.get("install_result") or install_result
-            if progress_callback:
-                progress_callback("session", 0, total, "", "running tool doctor preflight")
-            doctor_matrix = run_tool_doctor(packages=packages, persist=True)
-            if doctor_matrix.get("session"):
-                doctor_matrix.pop("session", None)
+            if packages:
+                if progress_callback:
+                    progress_callback("session", 0, total, "", "running tool doctor preflight")
+                doctor_matrix = run_tool_doctor(packages=packages, persist=True)
+                if doctor_matrix.get("session"):
+                    doctor_matrix.pop("session", None)
         else:
-            session = create_session()
-            install_result = install_packages(session, packages)
+            if packages:
+                session = create_session()
+                install_result = install_packages(session, packages)
+            else:
+                session = {"python_exe": sys.executable, "env": os.environ.copy()}
+                install_result = {"ok": True, "message": "native toolchain batch", "failed": [], "installed": [], "skipped": [], "logs": []}
 
         install_msg = install_result.get("message", "")
         if not install_result.get("ok", False):
@@ -541,7 +586,8 @@ def run_local_tool_batch_isolated(
                     extra={"session": "persistent" if persistent else "isolated"},
                 )
             else:
-                blockers = _family_install_blockers(tech, metric, "python", install_result)
+                branch_lang = normalize_language(language_by_branch.get(bname, language or "python"))
+                blockers = _family_install_blockers(tech, metric, branch_lang, install_result)
                 if blockers:
                     report = make_report(
                         technique_code=tech,
@@ -573,6 +619,8 @@ def run_local_tool_batch_isolated(
                             ref=ref,
                             local_root=local_root,
                         ) as branch_path:
+                            if branch_lang in ("javascript", "typescript"):
+                                ensure_tool_installed(tech, metric, branch_lang, branch_path=branch_path)
                             report, worker_log = _run_worker_for_branch(
                                 session,
                                 repo_root,
@@ -583,6 +631,7 @@ def run_local_tool_batch_isolated(
                                 version,
                                 commit_sha_by_branch.get(bname, ""),
                                 run_id_by_branch.get(bname, ""),
+                                language=branch_lang,
                                 require_real_tool=True,
                             )
                         extra = dict(report.get("extra") or {})

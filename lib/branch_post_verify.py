@@ -136,6 +136,126 @@ def shutil_which(cmd):
     return shutil.which(cmd)
 
 
+def _resolve_cmd(argv):
+    """Resolve executable path (Windows .cmd shims)."""
+    if not argv:
+        return argv
+    exe = shutil_which(argv[0])
+    if exe:
+        return [exe] + list(argv[1:])
+    return list(argv)
+
+
+def _missing_executable(exc):
+    return getattr(exc, "winerror", None) == 2 or getattr(exc, "errno", None) == 2
+
+
+def _run_cmd(argv, cwd, timeout):
+    """Run command; return (ran, ok, detail). ran=False when executable missing."""
+    try:
+        rc = subprocess.run(
+            _resolve_cmd(argv),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        combined = (rc.stdout or "") + (rc.stderr or "")
+        return True, rc.returncode == 0, combined.strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if _missing_executable(exc):
+            return False, False, ""
+        return True, False, str(exc)
+
+
+def _local_tsc_cmd(branch_dir):
+    for rel in (
+        os.path.join("node_modules", ".bin", "tsc"),
+        os.path.join("node_modules", "typescript", "bin", "tsc"),
+    ):
+        path = os.path.join(branch_dir, rel)
+        if os.name == "nt" and not path.lower().endswith(".cmd"):
+            cmd_path = path + ".cmd"
+            if os.path.isfile(cmd_path):
+                return [cmd_path, "-p", "tsconfig.json"]
+        if os.path.isfile(path):
+            return [path, "-p", "tsconfig.json"]
+    return None
+
+
+def _compile_typescript(branch_dir):
+    if not os.path.isfile(os.path.join(branch_dir, "tsconfig.json")):
+        return True, ""
+    tsc_cmd = _local_tsc_cmd(branch_dir)
+    if not tsc_cmd and shutil_which("tsc"):
+        tsc_cmd = ["tsc", "-p", "tsconfig.json"]
+    if not tsc_cmd and shutil_which("npm"):
+        ran, ok, _detail = _run_cmd(["npm", "install", "--silent"], branch_dir, 180)
+        if not ran:
+            return False, ""
+        if not ok:
+            return True, "tests FAIL: npm install failed"
+        tsc_cmd = _local_tsc_cmd(branch_dir)
+    if not tsc_cmd:
+        return False, ""
+    ran, ok, detail = _run_cmd(tsc_cmd, branch_dir, 120)
+    if not ran:
+        return False, ""
+    if not ok:
+        if "not the tsc command" in detail.lower():
+            return False, ""
+        return True, "tests FAIL: %s" % detail[:200]
+    return True, ""
+
+
+def _run_language_tests(branch_dir, language):
+    """Run language test suite when toolchain is available."""
+    lang = (language or "python").lower()
+    if lang == "java":
+        if not shutil_which("mvn") or not os.path.isfile(os.path.join(branch_dir, "pom.xml")):
+            return ""
+        ran, ok, detail = _run_cmd(["mvn", "-q", "test"], branch_dir, _pytest_timeout_sec())
+        if not ran:
+            return ""
+        if not ok:
+            return "tests FAIL: %s" % detail[:200]
+        return "mvn test OK"
+    if lang in ("csharp", "c#"):
+        csproj = None
+        for fn in os.listdir(branch_dir):
+            if fn.endswith(".csproj"):
+                csproj = fn
+                break
+        if not csproj or not shutil_which("dotnet"):
+            return ""
+        ran, ok, detail = _run_cmd(["dotnet", "test", csproj, "-v", "q"], branch_dir, _pytest_timeout_sec())
+        if not ran:
+            return ""
+        if not ok:
+            return "tests FAIL: %s" % detail[:200]
+        return "dotnet test OK"
+    if lang in ("javascript", "typescript"):
+        if not shutil_which("node") or not os.path.isfile(os.path.join(branch_dir, "package.json")):
+            return ""
+        runner = os.path.join(branch_dir, "tests", "run.js")
+        if not os.path.isfile(runner):
+            return ""
+        if lang == "typescript":
+            compiled, msg = _compile_typescript(branch_dir)
+            if msg:
+                return msg
+            if not compiled:
+                return ""
+        ran, ok, detail = _run_cmd(["node", runner], branch_dir, _pytest_timeout_sec())
+        if not ran:
+            return ""
+        if not ok:
+            return "tests FAIL: %s" % detail[:200]
+        return "node tests OK"
+    return ""
+
+
 def verify_generated_branch(branch_dir, tech, metric, bt, version, language, progress_callback=None):
     """Verify one branch: structure, syntax, import smoke, and pytest."""
 
@@ -189,6 +309,12 @@ def verify_generated_branch(branch_dir, tech, metric, bt, version, language, pro
         messages.append("java compile OK")
     elif lang in ("csharp", "c#") and syn == []:
         messages.append("csharp build OK")
+
+    test_msg = _run_language_tests(branch_dir, lang)
+    if test_msg:
+        messages.append(test_msg)
+        if test_msg.startswith("tests FAIL"):
+            return {"ok": False, "loc": loc, "messages": messages}
 
     if lang == "python":
         from lib.registry import metric_entry, package_name
