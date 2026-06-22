@@ -601,8 +601,6 @@ def _qa_effective_creds():
 
 def _qa_creds_ready(audit):
     """QA ready when Testable URLs are configured and credentials are available."""
-    if not audit.get("testable_ready"):
-        return False
     urls_ok = audit.get("testable_urls_ok", False)
     email, password, _ = _qa_effective_creds()
     return urls_ok and bool(email and password)
@@ -3030,7 +3028,8 @@ def _whitebox_testable_catalog_preview(env_file, repository_match, branch_names,
 def _tab_whitebox(filters):
     st.header("2 — Whitebox QA + taxonomy + S3")
     email_for_auth, password_for_auth, _cred_source = _qa_effective_creds()
-    if not filters.get("qa_ready"):
+    qa_signed_in = bool(st.session_state.get("qa_login_ok")) and bool(email_for_auth)
+    if not qa_signed_in:
         _render_whitebox_qa_login(filters["env_file"])
     else:
         st.success("Whitebox will run as **%s**." % email_for_auth)
@@ -3042,6 +3041,11 @@ def _tab_whitebox(filters):
                 filters["env_file"],
                 show_header=False,
                 switch_mode=True,
+            )
+        if not filters.get("qa_ready"):
+            st.warning(
+                "Signed in, but Testable platform URLs are not fully configured. "
+                "Ensure **IDENTITY_URL**, **RUNTIME_URL**, and **VIEWS_URL** are set in the deployment environment."
             )
 
     branches = filters["summary"]["branches"]
@@ -3316,9 +3320,14 @@ def _tab_whitebox(filters):
     wb_can_run = bool(read_cfg) and bool(pending_runnable) and filters.get("qa_ready")
     wb_blockers = []
     if not filters.get("qa_ready"):
-        wb_blockers.append(
-            "sign in with your Testable QA account in the **Testable QA sign-in** form above"
-        )
+        if qa_signed_in:
+            wb_blockers.append(
+                "configure Testable platform URLs (IDENTITY_URL, RUNTIME_URL, VIEWS_URL) in the deployment environment"
+            )
+        else:
+            wb_blockers.append(
+                "sign in with your Testable QA account in the **Testable QA sign-in** form above"
+            )
     if not read_cfg:
         wb_blockers.append("configure GitHub (OAuth on Branches tab or GITHUB_TOKEN + REPOSITORY_MATCH)")
     if not selected:
@@ -3350,7 +3359,13 @@ def _tab_whitebox(filters):
         st.caption("Run pending blocked until: %s." % "; ".join(wb_blockers))
 
     wb_run_targets = None
-    if pending_runnable or (selected_runnable and not already_completed):
+    show_run_actions = bool(
+        pending_runnable
+        or (selected_runnable and not already_completed)
+        or already_completed
+        or selected
+    )
+    if show_run_actions:
         btn_cols = st.columns(2 if (already_completed and pending_runnable) else 1)
         with btn_cols[0]:
             label = (
@@ -3375,14 +3390,6 @@ def _tab_whitebox(filters):
                     key="wb_rerun_all_btn",
                 ):
                     wb_run_targets = list(selected_runnable)
-    elif already_completed and selected_runnable:
-        if st.button(
-            "Re-run all selected (%d)" % len(selected_runnable),
-            width="stretch",
-            disabled=not wb_can_rerun,
-            key="wb_rerun_completed_btn",
-        ):
-            wb_run_targets = list(selected_runnable)
 
     if wb_run_targets:
         if not read_cfg:

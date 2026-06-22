@@ -13,6 +13,8 @@ QA_OP_TESTABLE_URLS = {
     "FRONTEND_URL": "https://qa-frontend.testable.cc",
 }
 
+CORE_TESTABLE_URL_KEYS = ("IDENTITY_URL", "RUNTIME_URL", "VIEWS_URL")
+
 TESTABLE_REQUIRED = (
     ("IDENTITY_URL", "Testable identity API — qa-api.testable.cc (identity-service)"),
     ("RUNTIME_URL", "Testable runtime API — qa-runtime.testable.cc (runtime-api)"),
@@ -66,6 +68,14 @@ def _url_matches_qa_op(key):
     return actual.lower() == expected.rstrip("/").lower()
 
 
+def _testable_urls_ok(testable_rows):
+    """True when core Testable API URLs are set (file or process env)."""
+    core = [r for r in testable_rows if r["key"] in CORE_TESTABLE_URL_KEYS]
+    if not all(r["configured"] for r in core):
+        return False
+    return all(r.get("url_matches_qa_op") is not False for r in core)
+
+
 def audit_credentials(env_file=None, root=None):
     """Return credential checklist without exposing secret values."""
     repo_root = Path(root or Path(__file__).resolve().parents[1])
@@ -103,11 +113,7 @@ def audit_credentials(env_file=None, root=None):
     s3 = _row(S3_REQUIRED, "s3_required") + _row(S3_OPTIONAL, "s3_optional")
 
     testable_ok = all(r["configured"] for r in testable if r["group"] == "testable_required")
-    urls_ok = all(
-        r.get("url_matches_qa_op") is not False
-        for r in testable
-        if r["key"] in QA_OP_TESTABLE_URLS and r["configured"]
-    )
+    urls_ok = _testable_urls_ok(testable)
     s3_ok = all(r["configured"] for r in s3 if r["group"] == "s3_required")
     # boto3 can use shared credentials file even when env vars unset
     if not s3_ok:
@@ -118,10 +124,10 @@ def audit_credentials(env_file=None, root=None):
     return {
         "env_file": str(env_path),
         "env_file_present": present,
-        "testable_ready": present and testable_ok,
-        "testable_urls_ok": present and urls_ok,
+        "testable_ready": testable_ok,
+        "testable_urls_ok": urls_ok,
         "qa_op_urls": QA_OP_TESTABLE_URLS,
-        "s3_ready": present and s3_ok,
+        "s3_ready": s3_ok,
         "testable": testable,
         "s3": s3,
     }
