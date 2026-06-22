@@ -9,7 +9,11 @@ import unittest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
 
-from lib.registry import iter_branches, parse_metrics_filter, parse_qualified_metrics  # noqa: E402
+from lib.pipeline_selection import (  # noqa: E402
+    full_scope_branch_count,
+    qualified_metric_choices,
+)
+from lib.registry import iter_branches, load_registry, parse_metrics_filter, parse_qualified_metrics  # noqa: E402
 
 
 class QualifiedMetricsTests(unittest.TestCase):
@@ -37,6 +41,18 @@ class QualifiedMetricsTests(unittest.TestCase):
     def test_flat_list_still_works_single_technique(self):
         codes = parse_metrics_filter("DOV", "SA")
         self.assertIn("DOV", codes)
+
+    def test_qualified_metric_choices_all_techniques(self):
+        reg = load_registry()
+        techs = [t["technique_code"] for t in reg["techniques"]]
+        choices = qualified_metric_choices(techs, reg)
+        self.assertIn("SA:DOV", choices)
+        self.assertIn("CQ:ABPO", choices)
+        self.assertIn("DP:CCS", choices)
+        self.assertEqual(len(choices), 103)
+
+    def test_full_scope_branch_count(self):
+        self.assertEqual(full_scope_branch_count(), 412)
 
 
 if __name__ == "__main__":

@@ -125,9 +125,7 @@ def format_branch_issues(info, s3_report=None):
     s3_sync = info.get("s3_sync") or {}
     sync_status = s3_sync.get("status")
     if sync_status == "AUTH":
-        issues.append(
-            "S3 credentials expired — paste fresh AWS keys into .env.local and click Reload"
-        )
+        issues.append("S3 sync failed: AWS credentials rejected")
     elif sync_status and sync_status not in ("OK", "N/A"):
         reason = s3_sync.get("reason") or s3_sync.get("error") or ""
         issues.append("S3 sync during run: %s%s" % (
@@ -140,7 +138,7 @@ def format_branch_issues(info, s3_report=None):
         if s3_status == "AUTH":
             detail = (s3_report.get("extra") or {}).get("skip_reason") or s3_report.get("raw_summary") or ""
             issues.append(
-                "S3 proof: AUTH — refresh AWS credentials in .env.local%s"
+                "S3 proof: credentials rejected by AWS%s"
                 % ((" — %s" % detail) if detail else "")
             )
         elif s3_status in ("SKIPPED", "ERROR", "MISSING"):

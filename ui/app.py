@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 WHITEBOX_AUTO_PREVIEW_LIMIT = 12
+LARGE_SCOPE_THRESHOLD = 48
+TABLE_PAGE_SIZE = 50
 
 from lib.branch_pipeline import (  # noqa: E402
     apply_current_scores,
@@ -58,8 +60,9 @@ from lib.metrics import github_branch_url, infer_from_branch_name  # noqa: E402
 from lib.pipeline_selection import (  # noqa: E402
     branch_type_options,
     csv_from_list,
+    full_scope_branch_count,
     metric_options,
-    selection_summary,
+    qualified_metric_choices,
     technique_options,
 )
 from lib.proofs import (  # noqa: E402
@@ -72,6 +75,12 @@ from lib.proofs import (  # noqa: E402
     load_proof_bundle,
     whitebox_completion,
 )
+from lib.report_sync_service import start as start_report_sync  # noqa: E402
+from lib.report_sync_service import status as report_sync_status  # noqa: E402
+from lib.report_sync_service import stop as stop_report_sync  # noqa: E402
+from lib.report_sync_service import trigger_now as trigger_report_sync  # noqa: E402
+from lib.s3_sync import s3_live_check  # noqa: E402
+from lib.whitebox_history import branch_run_history, split_completed_pending  # noqa: E402
 from lib.registry import load_registry  # noqa: E402
 from lib.repo_state import ensure_repo_aligned  # noqa: E402
 from lib.sa_qa import load_env, reload_s3_credentials, run_taxonomy_batch, verify_login  # noqa: E402
@@ -509,6 +518,24 @@ def _local_tool_preview(branches):
 
 def _readiness():
     audit = audit_credentials(str(ROOT / ".env.local"), root=str(ROOT))
+    if not audit.get("s3_ready"):
+        audit["s3_live_ok"] = False
+        audit["s3_live_reason"] = "AWS credentials not configured"
+        return audit
+
+    ttl = 60
+    now = time.time()
+    cached_ts = st.session_state.get("_s3_live_check_ts") or 0.0
+    if now - cached_ts < ttl and "_s3_live_ok" in st.session_state:
+        audit["s3_live_ok"] = bool(st.session_state.get("_s3_live_ok"))
+        audit["s3_live_reason"] = st.session_state.get("_s3_live_reason") or ""
+    else:
+        live = s3_live_check()
+        st.session_state["_s3_live_check_ts"] = now
+        st.session_state["_s3_live_ok"] = live.get("ok", False)
+        st.session_state["_s3_live_reason"] = live.get("reason") or ""
+        audit["s3_live_ok"] = live.get("ok", False)
+        audit["s3_live_reason"] = live.get("reason") or ""
     return audit
 
 
@@ -581,18 +608,24 @@ def _scm_app_user():
     return _ensure_scm_identity()
 
 
-_USER_SCOPED_SESSION_KEYS = (
+_GITHUB_SCOPED_SESSION_KEYS = (
     "github_token_saved", "github_repo_slug", "github_user_login",
     "github_login_ok", "github_login_msg", "github_repo_url",
     "github_default_branch", "github_push_method", "github_oauth_url_cache",
-    "github_needs_install", "github_access_detail",
+    "github_needs_install", "github_access_detail", "github_first_connect",
     "scm_view", "scm_callback", "scm_discovered_repos", "scm_discovery_error",
+)
+
+_PIPELINE_SCOPED_SESSION_KEYS = (
     "gen_rows", "validate_rows", "validate_ok", "last_branch_pipeline",
     "last_asserts", "last_pushed", "push_status_cache",
     "last_whitebox_branches", "last_qa_rc", "last_qa_batch",
     "last_local_run", "last_local_log", "last_sonar_run", "last_sonar_log",
+    "last_gen_log", "last_validate_log", "last_push_log",
     "repo_switch_notice",
 )
+
+_USER_SCOPED_SESSION_KEYS = _GITHUB_SCOPED_SESSION_KEYS + _PIPELINE_SCOPED_SESSION_KEYS
 
 
 def _clear_qa_session_caches():
@@ -625,7 +658,6 @@ def _apply_qa_login(env_file, email, password):
     st.session_state["qa_password_saved"] = password
     st.session_state["qa_login_ok"] = True
     st.session_state["qa_login_msg"] = msg
-    _bind_app_user(email)
     return True, msg
 
 
@@ -635,8 +667,17 @@ def _sign_out_qa_only():
     st.session_state.pop("qa_login_ok", None)
     st.session_state.pop("qa_login_msg", None)
     _clear_qa_session_caches()
-    if not st.session_state.get("github_user_login"):
-        _bind_app_user("")
+    stop_report_sync(_app_user_email())
+
+
+def _clear_pipeline_scoped_session():
+    for key in _PIPELINE_SCOPED_SESSION_KEYS:
+        st.session_state.pop(key, None)
+
+
+def _clear_github_scoped_session():
+    for key in _GITHUB_SCOPED_SESSION_KEYS:
+        st.session_state.pop(key, None)
 
 
 def _clear_user_scoped_session():
@@ -644,17 +685,23 @@ def _clear_user_scoped_session():
         st.session_state.pop(key, None)
 
 
-def _bind_app_user(email):
-    """Bind Streamlit session to one QA user; clear stale state on switch."""
-    email = (email or "").strip()
+def _bind_github_identity(identity):
+    """Bind app identity to GitHub account; clear pipeline state on switch."""
+    identity = (identity or "").strip()
     prev = (st.session_state.get("_bound_app_user") or "").strip()
-    if prev and email and prev != email:
-        _clear_user_scoped_session()
-    if email:
-        st.session_state["_bound_app_user"] = email
+    if prev and identity and prev != identity:
+        _clear_pipeline_scoped_session()
+    if identity:
+        st.session_state["_bound_app_user"] = identity
     else:
         st.session_state.pop("_bound_app_user", None)
-        _clear_user_scoped_session()
+
+
+def _bind_app_user(email):
+    """Legacy bind helper — only used on full sign-out; does not touch GitHub."""
+    del email
+    st.session_state.pop("_bound_app_user", None)
+    _clear_user_scoped_session()
 
 
 def _sidebar_user_login(env_file):
@@ -1070,6 +1117,9 @@ def _reset_session_pipeline_state():
         "last_local_log",
         "last_sonar_run",
         "last_sonar_log",
+        "last_gen_log",
+        "last_validate_log",
+        "last_push_log",
     ):
         st.session_state.pop(key, None)
 
@@ -1105,6 +1155,17 @@ def _github_connected_status():
         st.success("GitHub connected as **@%s** → `%s` (%s)" % (login, repo, method))
     else:
         st.success("GitHub connected as **@%s** — select a repository to continue." % login)
+
+    if st.session_state.get("github_first_connect"):
+        st.info(
+            "Install the **Testable Assurance Studio** GitHub App on the repositories you will "
+            "push to — this avoids push failures later."
+        )
+        st.link_button(
+            "Install GitHub App",
+            github_app_install_url(),
+            width="stretch",
+        )
 
     if st.session_state.get("github_needs_install"):
         _github_install_prompt(
@@ -1194,13 +1255,14 @@ def _handle_oauth_callback():
             login_hint=oauth_session.login_hint,
         )
         identity = (result.app_identity or result.provider_username or app_user).strip()
-        st.session_state["_bound_app_user"] = identity
+        _bind_github_identity(identity)
         st.session_state.pop("_scm_anon_user", None)
         conn = svc.get_active_token(identity) or get_connection(identity)
         st.session_state["github_login_ok"] = True
         st.session_state["github_user_login"] = result.provider_username
         st.session_state["github_token_saved"] = (conn.access_token if conn else "")
         st.session_state["github_push_method"] = "oauth"
+        st.session_state["github_first_connect"] = True
         st.session_state.pop("github_repo_slug", None)
         st.session_state.pop("github_repo_url", None)
         st.session_state.pop("scm_discovered_repos", None)
@@ -1360,13 +1422,22 @@ def _scm_repo_picker_view():
             st.session_state["github_access_detail"] = selected.get("access_detail") or ""
             st.session_state.pop("scm_view", None)
             st.session_state.pop("scm_callback", None)
+            access_ok, access_detail = _recheck_github_access()
+            if access_ok:
+                st.session_state.pop("github_first_connect", None)
+            elif st.session_state.get("github_first_connect"):
+                st.session_state["github_needs_install"] = True
+                st.session_state["github_access_detail"] = (
+                    access_detail or selected.get("access_detail") or ""
+                )
             _sync_repo_artifacts(show_notice=False)
-            if selected.get("access_ok"):
+            if access_ok or selected.get("access_ok"):
                 st.success("Repository **%s** selected." % selected["repo_slug"])
             else:
                 st.warning(
                     "Repository selected, but the GitHub App still needs install permissions."
                 )
+                _github_install_prompt(selected["repo_slug"], access_detail)
             st.rerun()
         except Exception as exc:
             st.error(str(exc))
@@ -1466,6 +1537,75 @@ def _github_connect_oauth():
         st.error(st.session_state.pop("github_oauth_error"))
 
 
+def _cached_selection_summary(techniques, metrics, types_tuple, version):
+    """Cached branch scope — avoids recomputing 412-branch lists on every rerun."""
+    from lib.pipeline_selection import selection_summary
+    from lib.registry import load_registry
+
+    reg = load_registry()
+    types = list(types_tuple) if types_tuple else None
+    return selection_summary(techniques, metrics, types, version, reg)
+
+
+_cached_selection_summary = st.cache_data(show_spinner="Updating scope…")(_cached_selection_summary)
+
+
+def _scoped_dataframe(rows, label, key_prefix, page_size=TABLE_PAGE_SIZE):
+    """Render large tables with pagination to keep the UI responsive."""
+    if not rows:
+        st.caption("No %s rows." % label.lower())
+        return
+    total = len(rows)
+    if total <= page_size:
+        st.dataframe(rows, width="stretch")
+        return
+    pages = max(1, (total + page_size - 1) // page_size)
+    page_key = "%s_page" % key_prefix
+    page = st.number_input(
+        "%s page" % label,
+        min_value=1,
+        max_value=pages,
+        value=min(int(st.session_state.get(page_key, 1)), pages),
+        key=page_key,
+    )
+    start = (page - 1) * page_size
+    end = min(start + page_size, total)
+    st.caption("Showing %d–%d of %d" % (start + 1, end, total))
+    st.dataframe(rows[start:end], width="stretch")
+
+
+def _render_run_log_expanders():
+    """Persisted pipeline run logs (Generate / Validate / Push)."""
+    st.subheader("Run logs")
+    log_specs = (
+        ("Generate", "last_gen_log"),
+        ("Validate", "last_validate_log"),
+        ("Push", "last_push_log"),
+    )
+    for label, state_key in log_specs:
+        lines = st.session_state.get(state_key) or []
+        with st.expander("%s run log (%d lines)" % (label, len(lines)), expanded=False):
+            if lines:
+                st.code("\n".join(lines), language=None)
+            else:
+                st.caption("No %s run recorded yet in this session." % label.lower())
+
+
+def _resolve_repo_push_rows(in_scope, github_ready, force_refresh=False):
+    """GitHub remote status — cached; auto-fetch only for small scopes."""
+    if not github_ready or not in_scope:
+        return [], False, True
+    key = _push_status_cache_key(in_scope)
+    cache = st.session_state.get("push_status_cache")
+    if not force_refresh and cache and cache.get("key") == key:
+        return cache["rows"], cache["all_pushed"], True
+    if not force_refresh and len(in_scope) > LARGE_SCOPE_THRESHOLD:
+        return [], False, False
+    with st.spinner("Checking GitHub status for %d branches…" % len(in_scope)):
+        rows, all_pushed = _branch_push_status(in_scope, force_refresh=True)
+    return rows, all_pushed, True
+
+
 def _sidebar_filters():
     st.sidebar.image(str(LOGO), width=120)
     env_file = str(ROOT / ".env.local")
@@ -1474,35 +1614,85 @@ def _sidebar_filters():
     registry = load_registry()
     tech_opts = technique_options(registry)
     tech_codes = [c for c, _ in tech_opts]
+    type_opts = branch_type_options(registry)
+    version = st.sidebar.text_input("Version", "2.6", key="sidebar_version")
+    full_count = full_scope_branch_count(registry, version)
 
-    use_all = st.sidebar.checkbox("All techniques (412)", value=False)
-    if use_all:
-        techniques, selected_techniques = "all", tech_codes
-    else:
-        selected_techniques = st.sidebar.multiselect(
-            "Techniques", tech_codes, default=["SA"],
+    use_all_techniques = st.sidebar.checkbox(
+        "All techniques (%d)" % full_count,
+        value=False,
+        key="sidebar_use_all_techniques",
+    )
+
+    prev_all_techniques = st.session_state.get("_sidebar_prev_all_techniques", False)
+    if use_all_techniques and not prev_all_techniques:
+        st.session_state["sidebar_techniques_pick"] = list(tech_codes)
+        _cached_selection_summary.clear()
+    if not use_all_techniques and prev_all_techniques:
+        st.session_state["sidebar_techniques_pick"] = ["SA"]
+    st.session_state["_sidebar_prev_all_techniques"] = use_all_techniques
+
+    if use_all_techniques:
+        selected_techniques = list(tech_codes)
+        techniques = "all"
+        st.session_state["sidebar_techniques_all_display"] = list(tech_codes)
+        st.sidebar.multiselect(
+            "Techniques",
+            tech_codes,
             format_func=lambda c: next(l for code, l in tech_opts if code == c),
+            disabled=True,
+            key="sidebar_techniques_all_display",
+        )
+    else:
+        if "sidebar_techniques_pick" not in st.session_state:
+            st.session_state["sidebar_techniques_pick"] = ["SA"]
+        selected_techniques = st.sidebar.multiselect(
+            "Techniques",
+            tech_codes,
+            format_func=lambda c: next(l for code, l in tech_opts if code == c),
+            key="sidebar_techniques_pick",
         )
         techniques = csv_from_list(selected_techniques) if selected_techniques else "SA"
 
-    use_all_metrics = st.sidebar.checkbox("All metrics", value=False)
+    techs_for_metrics = list(tech_codes) if use_all_techniques else selected_techniques
+    metric_choices = qualified_metric_choices(techs_for_metrics, registry)
+
+    use_all_metrics = st.sidebar.checkbox(
+        "All metrics",
+        value=False,
+        key="sidebar_use_all_metrics",
+    )
+    prev_all_metrics = st.session_state.get("_sidebar_prev_all_metrics", False)
+    if use_all_metrics and not prev_all_metrics:
+        st.session_state["sidebar_metrics_pick"] = list(metric_choices)
+        _cached_selection_summary.clear()
+    if not use_all_metrics and prev_all_metrics and use_all_techniques:
+        st.session_state["sidebar_metrics_pick"] = list(metric_choices)
+    st.session_state["_sidebar_prev_all_metrics"] = use_all_metrics
+
     if use_all_metrics:
         metrics = "all"
+        st.session_state["sidebar_metrics_all_display"] = list(metric_choices)
+        st.sidebar.multiselect(
+            "Metrics",
+            metric_choices,
+            disabled=True,
+            key="sidebar_metrics_all_display",
+        )
     else:
-        metric_choices = []
-        techs_for_metrics = tech_codes if use_all else selected_techniques
-        for tc in techs_for_metrics:
-            for m in metric_options(tc, registry):
-                metric_choices.append("%s:%s" % (tc, m))
-        picked = st.sidebar.multiselect("Metrics", sorted(set(metric_choices)))
+        if "sidebar_metrics_pick" not in st.session_state:
+            st.session_state["sidebar_metrics_pick"] = list(metric_choices) if use_all_techniques else []
+        picked = st.sidebar.multiselect(
+            "Metrics",
+            metric_choices,
+            key="sidebar_metrics_pick",
+        )
         if picked:
             metrics = csv_from_list(picked)
         else:
-            metrics = "DOV" if techniques == "SA" else "all"
+            metrics = "all"
 
-    type_opts = branch_type_options(registry)
-    types = st.sidebar.multiselect("Branch types", type_opts, default=type_opts) or type_opts
-    version = st.sidebar.text_input("Version", "2.6")
+    types = st.sidebar.multiselect("Branch types", type_opts, default=type_opts, key="sidebar_branch_types") or type_opts
 
     lang_opts = list(SUPPORTED_UI_LANGUAGES)
     language = st.sidebar.selectbox(
@@ -1517,28 +1707,56 @@ def _sidebar_filters():
     runtime = normalize_runtime(language, runtime)
     st.sidebar.caption(sidebar_language_caption(language))
 
-    summary = selection_summary(techniques, metrics, types, version, registry)
+    if use_all_techniques and use_all_metrics:
+        st.sidebar.caption(
+            "Scope: all **%d** techniques, all **%d** qualified metrics."
+            % (len(tech_codes), len(metric_choices))
+        )
+    elif use_all_techniques:
+        st.sidebar.caption("Scope: all **%d** techniques." % len(tech_codes))
+
+    summary = _cached_selection_summary(techniques, metrics, tuple(types), version)
     st.sidebar.metric("In scope", summary["branch_count"])
 
     audit = _readiness()
     qa_ok = _qa_creds_ready(audit)
+    s3_ok = audit.get("s3_live_ok") if audit.get("s3_ready") else False
     c1, c2, c3 = st.sidebar.columns(3)
     c1.metric("QA", "OK" if qa_ok else "—")
-    c2.metric("S3", "OK" if audit["s3_ready"] else "—")
+    c2.metric("S3", "OK" if s3_ok else ("expired" if audit.get("s3_ready") else "—"))
     c3.metric("GitHub", "OK" if _github_creds_ready() else "—")
 
-    aws_key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
-    if aws_key.startswith("ASIA"):
-        st.sidebar.caption(
-            "AWS STS credentials (ASIA…) expire about every hour. "
-            "Paste fresh values into `.env.local`, then click **Reload credentials**."
-        )
-    if st.sidebar.button("Reload credentials from .env.local", key="reload_env_creds"):
-        env_path = str(ROOT / ".env.local")
-        load_env(env_path, override=True)
-        n = reload_s3_credentials(env_path, root=str(ROOT))
-        st.sidebar.success("Reloaded %d S3/AWS key(s) from .env.local" % n)
-        st.rerun()
+    if audit.get("s3_ready") and not s3_ok:
+        st.sidebar.caption(audit.get("s3_live_reason") or "S3 credentials rejected by AWS.")
+        if st.sidebar.button("Reload credentials from .env.local", key="reload_env_creds"):
+            env_path = str(ROOT / ".env.local")
+            load_env(env_path, override=True)
+            n = reload_s3_credentials(env_path, root=str(ROOT))
+            st.session_state.pop("_s3_live_check_ts", None)
+            st.session_state.pop("_s3_live_ok", None)
+            st.sidebar.success("Reloaded %d S3/AWS key(s) from .env.local" % n)
+            st.rerun()
+
+    if qa_ok:
+        sync_user = _app_user_email(audit)
+        start_report_sync(sync_user, root=str(ROOT), scope_branches=summary["branches"])
+        sync_st = report_sync_status(sync_user)
+        if sync_st.get("running"):
+            last_ts = sync_st.get("last_tick_ts") or 0.0
+            if last_ts:
+                ago = max(0, int(time.time() - last_ts))
+                sync_line = "Auto-sync: on — last pull %ds ago, %d synced" % (
+                    ago, sync_st.get("synced_count", 0),
+                )
+            else:
+                sync_line = "Auto-sync: starting… (%d pending)" % sync_st.get("pending_count", 0)
+            st.sidebar.caption(sync_line)
+            if sync_st.get("last_error"):
+                st.sidebar.caption("Sync note: %s" % sync_st["last_error"][:120])
+            if st.sidebar.button("Sync S3 reports now", key="sidebar_sync_s3_now"):
+                trigger_report_sync(sync_user)
+                st.sidebar.success("Sync triggered.")
+                st.rerun()
 
     return {
         "techniques": techniques,
@@ -1745,6 +1963,167 @@ def _pipeline_step_label(branches_available, gen_done, val_done, push_done):
     return 1, "Step 1 of 3 — **Generate** branches locally first."
 
 
+def _pending_branch_names(gen_rows, in_scope, incomplete_local=None):
+    """Branches in scope that still need generation (failed, incomplete, or never started)."""
+    incomplete = set(incomplete_local or [])
+    generated_ok = {
+        r["branch_name"]
+        for r in gen_rows
+        if r.get("branch_name") and r.get("generated") and r["branch_name"] not in incomplete
+    }
+    return [b for b in in_scope if b not in generated_ok]
+
+
+def _execute_generate_run(
+    filters,
+    work_root,
+    total,
+    in_scope,
+    repo_push_rows,
+    pending_only,
+    pending_branches,
+    max_fix_attempts,
+    auto_install,
+    assert_table_fn,
+):
+    """Run full-scope or pending-only generate and update session state."""
+    read_cfg = _github_read_config()
+    strength_map = build_regeneration_strength_map(
+        work_root,
+        in_scope,
+        github_config=read_cfg,
+        push_rows=repo_push_rows,
+        gen_rows=st.session_state.get("gen_rows") or [],
+    )
+    regenerated_branches = {b for b in in_scope if strength_map.get(b, 0) > 0}
+    last_validate_rows = st.session_state.get("validate_rows") or []
+    if not last_validate_rows:
+        last_validate_rows, _ = _load_pipeline_validation(work_root)
+    last_score_by_branch = {}
+    for row in last_validate_rows:
+        bname = row.get("branch_name")
+        if bname and row.get("strength_score") is not None:
+            last_score_by_branch[bname] = row.get("strength_score")
+    last_strength_by_branch = {}
+    for row in st.session_state.get("gen_rows") or []:
+        bname = row.get("branch_name")
+        if bname and row.get("strength") is not None:
+            last_strength_by_branch[bname] = row.get("strength")
+    score_history = snapshot_previous_scores(
+        st.session_state.get("score_history") or _load_score_history(work_root),
+        regenerated_branches,
+        last_strength_by_branch=last_strength_by_branch,
+        last_score_by_branch=last_score_by_branch,
+    )
+    st.session_state["score_history"] = score_history
+    _save_score_history(work_root, score_history)
+
+    n_run = len(pending_branches) if pending_only else total
+    panel_title = (
+        "Generating %d pending branches" % n_run
+        if pending_only
+        else "Generating %d branches" % total
+    )
+    gen_kwargs = dict(
+        techniques=filters["techniques"],
+        metrics=filters["metrics"],
+        types=filters["types"],
+        version=filters["version"],
+        language=filters["language"],
+        work_root=work_root,
+        strength_map=strength_map,
+        max_fix_attempts=int(max_fix_attempts),
+        auto_install=auto_install,
+        runtime=filters["runtime"],
+    )
+
+    with RunPanel(panel_title) as panel:
+        with panel.stdout_redirect():
+            if pending_only:
+                gen_result = generate_branches(
+                    branch_names_filter=pending_branches,
+                    clear_existing=False,
+                    progress_callback=panel.progress,
+                    **gen_kwargs,
+                )
+            else:
+                gen_result = generate_branches(
+                    progress_callback=panel.progress,
+                    **gen_kwargs,
+                )
+
+        if pending_only:
+            by_name = {r["branch_name"]: r for r in st.session_state.get("gen_rows") or []}
+            for row in gen_result.get("rows", []):
+                by_name[row["branch_name"]] = row
+            merged = [by_name[b] for b in in_scope if b in by_name]
+            st.session_state["gen_rows"] = merged
+            completed = sorted({r["branch_name"] for r in merged if r.get("generated")})
+            remaining = [b for b in in_scope if b not in set(completed)]
+            scope_success = not remaining
+            gen_status = {
+                "completed": completed,
+                "remaining": remaining,
+                "stop_cause": "done" if scope_success else gen_result.get("stop_cause", "errors"),
+                "total": total,
+                "stop_reason": gen_result.get("stop_reason"),
+            }
+        else:
+            merged = gen_result.get("rows", [])
+            st.session_state["gen_rows"] = merged
+            scope_success = bool(gen_result.get("success"))
+            gen_status = {
+                "completed": gen_result.get("completed", []),
+                "remaining": gen_result.get("remaining", []),
+                "stop_cause": gen_result.get("stop_cause"),
+                "total": gen_result.get("total", total),
+                "stop_reason": gen_result.get("stop_reason"),
+            }
+            st.session_state.pop("validate_rows", None)
+            st.session_state.pop("validate_ok", None)
+            st.session_state.pop("last_branch_pipeline", None)
+            _clear_pipeline_validation(work_root)
+
+        score_history = update_regenerated_strength(
+            st.session_state.get("score_history") or {},
+            gen_result.get("rows", []),
+        )
+        st.session_state["score_history"] = score_history
+        _save_score_history(work_root, score_history)
+        st.session_state["pipeline_gen_status"] = gen_status
+        st.session_state["last_gen_log"] = panel.log_lines
+
+        if scope_success:
+            if pending_only:
+                st.session_state["pipeline_flash"] = (
+                    "success",
+                    "Generated all %d pending branch(es); %d/%d complete in `%s`. **Validate** when ready."
+                    % (n_run, len(gen_status["completed"]), total, work_root),
+                )
+            else:
+                st.session_state["pipeline_flash"] = (
+                    "success",
+                    "Generated %d branch(es) in `%s`. **Validate** is now enabled."
+                    % (len(gen_result.get("generated", [])), work_root),
+                )
+            panel.set_result("complete", "complete")
+            st.rerun()
+        else:
+            completed_count = len(gen_status.get("completed", []))
+            remaining = gen_status.get("remaining", [])
+            st.error(
+                "Generated %d/%d branch(es). Could not generate: %s"
+                % (completed_count, total, ", ".join(remaining[:20]) + ("…" if len(remaining) > 20 else "") or "none")
+            )
+            if gen_status.get("stop_reason"):
+                st.caption("Detail: %s" % gen_status.get("stop_reason"))
+            panel.set_result("error", "stopped")
+        assert_table_fn(
+            st.session_state.get("gen_rows") or merged,
+            score_history=st.session_state.get("score_history"),
+        )
+
+
 def _tab_branches(filters):
     st.header("1 — Generate branches")
     total = filters["summary"]["branch_count"]
@@ -1875,11 +2254,19 @@ def _tab_branches(filters):
     all_validated = validate_ok and n_validated > 0 and n_validated == n_generated
     n_pushed = len([r for r in validate_rows if r.get("pushed")])
     in_scope = filters["summary"]["branches"]
-    n_on_github = 0
+    pending_branches = _pending_branch_names(gen_rows, in_scope, incomplete_local)
+    n_pending = len(pending_branches)
+    push_status_loaded = False
     repo_push_rows = []
+    n_on_github = 0
+    all_pushed_remote = False
     if github_ready and in_scope:
-        repo_push_rows, _ = _branch_push_status(in_scope)
-        n_on_github = len([r for r in repo_push_rows if r.get("on_github") == "yes"])
+        force_push_refresh = bool(st.session_state.pop("_force_push_status_refresh", False))
+        repo_push_rows, all_pushed_remote, push_status_loaded = _resolve_repo_push_rows(
+            in_scope, github_ready, force_refresh=force_push_refresh,
+        )
+        if push_status_loaded:
+            n_on_github = len([r for r in repo_push_rows if r.get("on_github") == "yes"])
 
     gen_done = n_generated >= total and total > 0
     branches_available = gen_done or (n_on_github >= total and total > 0)
@@ -1913,12 +2300,19 @@ def _tab_branches(filters):
         gate_hints.append("Connect GitHub and select a repository above to enable **Generate**.")
     if not branches_available and can_generate:
         gate_hints.append("Complete **Generate** (all branches) before **Validate** unlocks.")
-    elif branches_available and not gen_done and n_on_github >= total:
+    elif branches_available and not gen_done and push_status_loaded and n_on_github >= total:
         gate_hints.append(
             "Branches exist on GitHub — **Validate** fetches them locally, or run **Generate** to escalate strength."
         )
+    elif not push_status_loaded and github_ready and total > LARGE_SCOPE_THRESHOLD:
+        gate_hints.append(
+            "Large scope (%d branches) — click **Load GitHub status** below to check remote branches without slowing sidebar changes."
+            % total
+        )
     elif not can_validate and n_generated > 0 and n_generated < total:
-        gate_hints.append("Some branches missing locally — re-run **Generate** or push missing branches to GitHub.")
+        gate_hints.append(
+            "Some branches missing locally — use **Generate pending** to resume, or push missing branches to GitHub."
+        )
     if not can_push and validate_rows and not validate_ok:
         gate_hints.append("Fix validation failures, then **Push** unlocks.")
     elif not can_push and val_done and needs_install and not pat_fallback:
@@ -1949,13 +2343,22 @@ def _tab_branches(filters):
             "set **Read & write** (not just install the app)."
         )
 
-    btn_gen, btn_val, btn_push = st.columns(3)
+    btn_gen, btn_gen_pending, btn_val, btn_push = st.columns(4)
     with btn_gen:
         run_generate = st.button(
             "1 — Generate branches",
             type="primary" if step_no == 1 else "secondary",
             width="stretch",
             disabled=not can_generate,
+        )
+    with btn_gen_pending:
+        can_generate_pending = can_generate and 0 < n_pending < total
+        run_generate_pending = st.button(
+            "Generate pending (%d)" % n_pending,
+            type="secondary",
+            width="stretch",
+            disabled=not can_generate_pending,
+            help="Generate only the branches not yet completed; keeps existing branches intact.",
         )
     with btn_val:
         run_validate = st.button(
@@ -1982,43 +2385,52 @@ def _tab_branches(filters):
     if gate_hints:
         st.caption(" ".join(gate_hints))
 
-    if github_ready and in_scope:
-        st.subheader("Your repository")
-        repo_status_cols = st.columns([3, 1])
-        with repo_status_cols[1]:
-            if st.button("Refresh repo status", key="refresh_repo_status_branches", width="stretch"):
-                st.session_state.pop("push_status_cache", None)
-                st.rerun()
-        repo_status_display = []
-        regen_strength = build_regeneration_strength_map(
-            work_root,
-            in_scope,
-            github_config=_github_read_config(),
-            push_rows=repo_push_rows,
-            gen_rows=st.session_state.get("gen_rows") or [],
-        )
-        for prow in repo_push_rows:
-            exists = prow.get("on_github") == "yes"
-            bname = prow.get("branch")
-            next_strength = regen_strength.get(bname, 0)
-            local_exists = os.path.isdir(os.path.join(work_root, bname or ""))
-            if next_strength > 0 or exists or local_exists:
-                action = "regenerate at strength %d" % next_strength
-            else:
-                action = "create"
-            repo_status_display.append({
-                "branch": bname,
-                "in your repo": "yes" if exists else "new",
-                "remote sha": prow.get("remote_sha") or "—",
-                "planned action": action,
-            })
-        st.dataframe(repo_status_display, width="stretch")
-        st.caption(
-            "Branches already in **%s** will be regenerated with higher strength (more code) on **Generate**. "
-            "**planned action** shows the next write strength (0 = brand-new branch). "
-            "Run **Validate** to execute tools — that step takes longer than Generate."
-            % (repo_slug or "your repo")
-        )
+    if github_ready and in_scope and not push_status_loaded:
+        if st.button(
+            "Load GitHub status (%d branches)" % total,
+            key="load_github_status_branches",
+            width="stretch",
+        ):
+            st.session_state["_force_push_status_refresh"] = True
+            st.rerun()
+
+    if github_ready and in_scope and push_status_loaded:
+        with st.expander("Your repository — planned actions", expanded=total <= LARGE_SCOPE_THRESHOLD):
+            repo_status_cols = st.columns([3, 1])
+            with repo_status_cols[1]:
+                if st.button("Refresh repo status", key="refresh_repo_status_branches", width="stretch"):
+                    st.session_state["_force_push_status_refresh"] = True
+                    st.rerun()
+            repo_status_display = []
+            regen_strength = build_regeneration_strength_map(
+                work_root,
+                in_scope,
+                github_config=_github_read_config(),
+                push_rows=repo_push_rows,
+                gen_rows=st.session_state.get("gen_rows") or [],
+            )
+            for prow in repo_push_rows:
+                exists = prow.get("on_github") == "yes"
+                bname = prow.get("branch")
+                next_strength = regen_strength.get(bname, 0)
+                local_exists = os.path.isdir(os.path.join(work_root, bname or ""))
+                if next_strength > 0 or exists or local_exists:
+                    action = "regenerate at strength %d" % next_strength
+                else:
+                    action = "create"
+                repo_status_display.append({
+                    "branch": bname,
+                    "in your repo": "yes" if exists else "new",
+                    "remote sha": prow.get("remote_sha") or "—",
+                    "planned action": action,
+                })
+            _scoped_dataframe(repo_status_display, "Repository status", "repo_status")
+            st.caption(
+                "Branches already in **%s** will be regenerated with higher strength (more code) on **Generate**. "
+                "**planned action** shows the next write strength (0 = brand-new branch). "
+                "Run **Validate** to execute tools — that step takes longer than Generate."
+                % (repo_slug or "your repo")
+            )
 
     def _rows_have_asserts(rows):
         for r in rows or []:
@@ -2081,97 +2493,21 @@ def _tab_branches(filters):
                 if r.get("commit_sha"):
                     row["commit"] = r.get("commit_sha")
             display.append(row)
-        st.dataframe(display, width="stretch")
+        _scoped_dataframe(display, "Branch results", "branch_results_%s" % ("val" if has_asserts else "gen"))
 
-    if run_generate:
-        read_cfg = _github_read_config()
-        strength_map = build_regeneration_strength_map(
+    if run_generate or run_generate_pending:
+        _execute_generate_run(
+            filters,
             work_root,
+            total,
             in_scope,
-            github_config=read_cfg,
-            push_rows=repo_push_rows,
-            gen_rows=st.session_state.get("gen_rows") or [],
+            repo_push_rows,
+            pending_only=bool(run_generate_pending),
+            pending_branches=pending_branches,
+            max_fix_attempts=max_fix_attempts,
+            auto_install=auto_install,
+            assert_table_fn=_assert_table,
         )
-        regenerated_branches = {b for b in in_scope if strength_map.get(b, 0) > 0}
-        last_validate_rows = st.session_state.get("validate_rows") or []
-        if not last_validate_rows:
-            last_validate_rows, _ = _load_pipeline_validation(work_root)
-        last_score_by_branch = {}
-        for row in last_validate_rows:
-            bname = row.get("branch_name")
-            if bname and row.get("strength_score") is not None:
-                last_score_by_branch[bname] = row.get("strength_score")
-        last_strength_by_branch = {}
-        for row in st.session_state.get("gen_rows") or []:
-            bname = row.get("branch_name")
-            if bname and row.get("strength") is not None:
-                last_strength_by_branch[bname] = row.get("strength")
-        score_history = snapshot_previous_scores(
-            st.session_state.get("score_history") or _load_score_history(work_root),
-            regenerated_branches,
-            last_strength_by_branch=last_strength_by_branch,
-            last_score_by_branch=last_score_by_branch,
-        )
-        st.session_state["score_history"] = score_history
-        _save_score_history(work_root, score_history)
-        with RunPanel("Generating %d branches" % total) as panel:
-            with panel.stdout_redirect():
-                gen_result = generate_branches(
-                    filters["techniques"],
-                    filters["metrics"],
-                    filters["types"],
-                    filters["version"],
-                    filters["language"],
-                    work_root,
-                    progress_callback=panel.progress,
-                    strength_map=strength_map,
-                    max_fix_attempts=int(max_fix_attempts),
-                    auto_install=auto_install,
-                    runtime=filters["runtime"],
-                )
-            st.session_state["gen_rows"] = gen_result.get("rows", [])
-            score_history = update_regenerated_strength(
-                st.session_state.get("score_history") or {},
-                gen_result.get("rows", []),
-            )
-            st.session_state["score_history"] = score_history
-            _save_score_history(work_root, score_history)
-            st.session_state.pop("validate_rows", None)
-            st.session_state.pop("validate_ok", None)
-            st.session_state.pop("last_branch_pipeline", None)
-            _clear_pipeline_validation(work_root)
-            st.session_state["pipeline_gen_status"] = {
-                "completed": gen_result.get("completed", []),
-                "remaining": gen_result.get("remaining", []),
-                "stop_cause": gen_result.get("stop_cause"),
-                "total": gen_result.get("total", total),
-                "stop_reason": gen_result.get("stop_reason"),
-            }
-            if gen_result.get("success"):
-                st.session_state["pipeline_flash"] = (
-                    "success",
-                    "Generated %d branch(es) in `%s`. **Validate** is now enabled."
-                    % (len(gen_result.get("generated", [])), work_root),
-                )
-                panel.set_result("complete", "complete")
-                st.rerun()
-            else:
-                failed = gen_result.get("remaining", [])
-                st.error(
-                    "Generated %d/%d branch(es). Could not generate: %s"
-                    % (
-                        len(gen_result.get("completed", [])),
-                        gen_result.get("total", total),
-                        ", ".join(failed) or "none",
-                    )
-                )
-                if gen_result.get("stop_reason"):
-                    st.caption("Detail: %s" % gen_result.get("stop_reason"))
-                panel.set_result("error", "stopped")
-            _assert_table(
-                st.session_state.get("gen_rows") or gen_result.get("rows", []),
-                score_history=st.session_state.get("score_history"),
-            )
 
     if run_validate:
         gen_rows = st.session_state.get("gen_rows") or []
@@ -2257,6 +2593,7 @@ def _tab_branches(filters):
                 "stop_reason": val_result.get("stop_reason"),
             }
             _save_pipeline_validation(work_root, validate_rows, all_pass)
+            st.session_state["last_validate_log"] = panel.log_lines
             _assert_table(validate_rows, score_history=st.session_state.get("score_history"))
             if all_pass:
                 scores = [
@@ -2358,6 +2695,7 @@ def _tab_branches(filters):
                 panel.set_result("error", "stopped")
             else:
                 panel.set_result("error", "finished with issues")
+            st.session_state["last_push_log"] = panel.log_lines
         kind, msg = pipeline_toast
         if kind == "success":
             st.toast(msg, icon="✅")
@@ -2370,32 +2708,49 @@ def _tab_branches(filters):
         st.subheader(table_title)
         _assert_table(
             branch_table_rows,
-            pushed_col=False,
+            pushed_col=bool(validate_rows and any(r.get("pushed") for r in validate_rows)),
             score_history=st.session_state.get("score_history"),
         )
+
+    _render_run_log_expanders()
 
     st.subheader("GitHub push status")
     refresh = st.button("Refresh GitHub status", key="refresh_push_branches")
     if refresh:
-        st.session_state.pop("push_status_cache", None)
+        st.session_state["_force_push_status_refresh"] = True
+        st.rerun()
     if not github_ready:
         st.info("Connect GitHub to check push status.")
         push_rows, all_pushed = _branch_push_status(in_scope)
+        push_status_loaded = True
+    elif not push_status_loaded:
+        st.info(
+            "GitHub status not loaded for %d branches — click **Load GitHub status** above "
+            "or **Refresh GitHub status** here to fetch remote branch SHAs."
+            % total
+        )
+        push_rows, all_pushed = [], False
     else:
-        push_rows, all_pushed = _branch_push_status(in_scope, force_refresh=refresh)
-    st.dataframe(push_rows, width="stretch")
-    if all_pushed:
+        push_rows, all_pushed = repo_push_rows, all_pushed_remote
+    if push_rows:
+        with st.expander("GitHub push status table", expanded=total <= LARGE_SCOPE_THRESHOLD):
+            _scoped_dataframe(push_rows, "GitHub push status", "github_push")
+    if push_status_loaded and all_pushed:
         st.success("All in-scope branches are on GitHub — whitebox can run.")
-    else:
-        not_pushed = [r["branch"] for r in push_rows if r["on_github"] != "yes"]
+    elif push_status_loaded:
+        not_pushed = [r["branch"] for r in push_rows if r.get("on_github") != "yes"]
         st.warning(
             "Whitebox is blocked until these branches are pushed: %s"
-            % ", ".join(not_pushed)
+            % ", ".join(not_pushed[:20]) + ("…" if len(not_pushed) > 20 else "")
         )
 
     if st.session_state.get("last_asserts"):
-        with st.expander("Last validation details"):
-            st.dataframe(st.session_state["last_asserts"], width="stretch")
+        with st.expander("Previous validation details (full assert table)"):
+            _scoped_dataframe(
+                st.session_state["last_asserts"],
+                "Validation details",
+                "last_asserts",
+            )
 
 
 def _render_whitebox_qa_login(env_file, show_header=True, switch_mode=False):
@@ -2813,6 +3168,28 @@ def _tab_whitebox(filters):
 
     st.subheader("Branch readiness")
     st.dataframe(readiness, width="stretch")
+
+    history_rows = []
+    for bname in branches:
+        for run in branch_run_history(bname, root=str(ROOT))[:5]:
+            history_rows.append({
+                "branch": bname,
+                "run_id": run.get("run_id") or "—",
+                "status": run.get("run_status") or run.get("gate_status") or "—",
+                "gate_score": run.get("gate_score"),
+                "tasks": (
+                    "%d/%d" % (run.get("completed_tasks", 0), run.get("total_tasks", 0))
+                    if run.get("total_tasks") else "—"
+                ),
+                "when": run.get("timestamp") or "—",
+                "has_html": "yes" if run.get("html_path") else "no",
+            })
+    with st.expander("Previous whitebox runs", expanded=False):
+        if history_rows:
+            st.dataframe(history_rows, width="stretch")
+        else:
+            st.caption("No prior whitebox runs found for in-scope branches.")
+
     if n_not_in_catalog:
         st.warning(
             "**%d of %d** branch(es) are not in the Testable catalog yet. "
@@ -2882,6 +3259,28 @@ def _tab_whitebox(filters):
     )
     selected_runnable = [b for b in selected if b in on_github_set]
     selected_not_pushed = [b for b in selected if b not in on_github_set]
+    already_completed, pending = split_completed_pending(selected, root=str(ROOT))
+    pending_runnable = [b for b in pending if b in on_github_set]
+
+    if already_completed:
+        st.success(
+            "**%d** selected branch(es) already have a whitebox run with reports — "
+            "you can proceed to the next stage without re-running: %s"
+            % (len(already_completed), ", ".join(already_completed))
+        )
+        if st.button(
+            "Proceed to Compare",
+            key="wb_proceed_compare",
+            type="primary",
+            width="stretch",
+        ):
+            st.session_state["main_pipeline_tab"] = "Compare"
+            st.rerun()
+    if pending_runnable:
+        st.info(
+            "**%d** selected branch(es) still need whitebox execution: %s"
+            % (len(pending_runnable), ", ".join(pending_runnable))
+        )
 
     if not selected:
         st.warning("Select at least one branch to run whitebox.")
@@ -2910,7 +3309,7 @@ def _tab_whitebox(filters):
         help="How long to wait for GitHub branches to appear in the Testable catalog.",
     )
 
-    wb_can_run = bool(read_cfg) and bool(selected_runnable) and filters.get("qa_ready")
+    wb_can_run = bool(read_cfg) and bool(pending_runnable) and filters.get("qa_ready")
     wb_blockers = []
     if not filters.get("qa_ready"):
         wb_blockers.append(
@@ -2920,13 +3319,13 @@ def _tab_whitebox(filters):
         wb_blockers.append("configure GitHub (OAuth on Branches tab or GITHUB_TOKEN + REPOSITORY_MATCH)")
     if not selected:
         wb_blockers.append("select at least one branch")
-    elif not selected_runnable:
+    elif not pending_runnable and not already_completed:
         wb_blockers.append("push selected branches on the **Branches** tab (none are on GitHub yet)")
-    if filters.get("qa_ready") and qa_repo and selected_runnable:
+    if filters.get("qa_ready") and qa_repo and pending_runnable:
         ready_for_run = 0
         if catalog_preview and not catalog_preview.get("error"):
             ready_set = set(catalog_preview.get("ready") or [])
-            ready_for_run = sum(1 for b in selected_runnable if b in ready_set)
+            ready_for_run = sum(1 for b in pending_runnable if b in ready_set)
         if ready_for_run == 0:
             best_label = st.session_state.get("_qa_best_repo")
             if best_label and best_label != qa_repo:
@@ -2940,23 +3339,56 @@ def _tab_whitebox(filters):
                     % qa_repo
                 )
     wb_can_run = wb_can_run and not wb_blockers
-    if wb_blockers:
+    wb_can_rerun = bool(read_cfg) and bool(selected_runnable) and filters.get("qa_ready")
+    if wb_blockers and not pending_runnable:
         st.caption("Run blocked until: %s." % "; ".join(wb_blockers))
+    elif wb_blockers and pending_runnable:
+        st.caption("Run pending blocked until: %s." % "; ".join(wb_blockers))
 
-    if st.button(
-        "Run whitebox batch",
-        type="primary",
-        width="stretch",
-        disabled=not wb_can_run,
-    ):
+    wb_run_targets = None
+    if pending_runnable or (selected_runnable and not already_completed):
+        btn_cols = st.columns(2 if (already_completed and pending_runnable) else 1)
+        with btn_cols[0]:
+            label = (
+                "Run pending (%d)" % len(pending_runnable)
+                if pending_runnable
+                else "Run whitebox batch"
+            )
+            if st.button(
+                label,
+                type="primary",
+                width="stretch",
+                disabled=not wb_can_run,
+                key="wb_run_pending_btn",
+            ):
+                wb_run_targets = list(pending_runnable or selected_runnable)
+        if already_completed and pending_runnable and len(btn_cols) > 1:
+            with btn_cols[1]:
+                if st.button(
+                    "Re-run all selected (%d)" % len(selected_runnable),
+                    width="stretch",
+                    disabled=not wb_can_rerun,
+                    key="wb_rerun_all_btn",
+                ):
+                    wb_run_targets = list(selected_runnable)
+    elif already_completed and selected_runnable:
+        if st.button(
+            "Re-run all selected (%d)" % len(selected_runnable),
+            width="stretch",
+            disabled=not wb_can_rerun,
+            key="wb_rerun_completed_btn",
+        ):
+            wb_run_targets = list(selected_runnable)
+
+    if wb_run_targets:
         if not read_cfg:
             st.error("Connect GitHub or configure read credentials before running whitebox.")
             return
         if not email_for_auth or not password_for_auth:
             st.error("Sign in using the **Account** panel in the sidebar before running whitebox.")
             return
-        branches_csv = ",".join(selected_runnable)
-        with RunPanel("Whitebox QA (%d branches)" % len(selected_runnable)) as panel:
+        branches_csv = ",".join(wb_run_targets)
+        with RunPanel("Whitebox QA (%d branches)" % len(wb_run_targets)) as panel:
             gh_repo = (read_cfg or {}).get("repo_slug") or _github_repo_for_links()
             if not gh_repo:
                 st.error(
@@ -3028,7 +3460,7 @@ def _tab_whitebox(filters):
                     )
             st.session_state["last_qa_rc"] = rc
             st.session_state["last_qa_batch"] = batch_dir
-            st.session_state["last_whitebox_branches"] = selected_runnable
+            st.session_state["last_whitebox_branches"] = wb_run_targets
             skipped_catalog = batch_meta.get("catalog_skipped") or []
             if skipped_catalog:
                 st.warning(
@@ -3039,11 +3471,11 @@ def _tab_whitebox(filters):
                     % (len(skipped_catalog), ", ".join(skipped_catalog), qa_repo)
                 )
 
-            wb_after = whitebox_completion(selected, root=str(ROOT))
+            wb_after = whitebox_completion(wb_run_targets, root=str(ROOT))
             st.session_state["last_whitebox_detail"] = wb_after
             proof_rows = []
-            panel.progress("proofs", 0, len(selected), "", "collecting taxonomy + S3 proofs")
-            for idx, bname in enumerate(selected, 1):
+            panel.progress("proofs", 0, len(wb_run_targets), "", "collecting taxonomy + S3 proofs")
+            for idx, bname in enumerate(wb_run_targets, 1):
                 info = wb_after.get(bname, {})
                 row = {
                     "branch": bname,
@@ -3093,7 +3525,7 @@ def _tab_whitebox(filters):
                 if s3_report:
                     row["issues"] = format_branch_issues(info, s3_report)
                 proof_rows.append(row)
-                panel.progress("proofs", idx, len(selected), bname, row["whitebox"])
+                panel.progress("proofs", idx, len(wb_run_targets), bname, row["whitebox"])
 
             st.session_state["last_whitebox_status"] = proof_rows
             st.session_state["last_whitebox_log"] = panel.log_lines
@@ -3717,16 +4149,22 @@ def main():
         return
 
     filters = _sidebar_filters()
-    t1, t2, t3, t4, t5 = st.tabs(["Branches", "Whitebox", "Local tools", "SonarQube", "Compare"])
-    with t1:
+    tab = st.radio(
+        "Pipeline stage",
+        ["Branches", "Whitebox", "Local tools", "SonarQube", "Compare"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="main_pipeline_tab",
+    )
+    if tab == "Branches":
         _tab_branches(filters)
-    with t2:
+    elif tab == "Whitebox":
         _tab_whitebox(filters)
-    with t3:
+    elif tab == "Local tools":
         _tab_local_tools(filters)
-    with t4:
+    elif tab == "SonarQube":
         _tab_sonar(filters)
-    with t5:
+    else:
         _tab_comparison(filters)
 
 

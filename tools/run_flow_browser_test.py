@@ -56,7 +56,7 @@ def main():
             record("sidebar_visible", sidebar.is_visible())
 
             # --- Selection: 2 techniques + all metrics ---
-            all_tech_cb = sidebar.get_by_role("checkbox", name="All techniques (412)")
+            all_tech_cb = sidebar.get_by_role("checkbox", name=re.compile(r"All techniques \(\d+\)"))
             if all_tech_cb.count() and all_tech_cb.is_checked():
                 all_tech_cb.uncheck()
                 page.wait_for_timeout(1500)

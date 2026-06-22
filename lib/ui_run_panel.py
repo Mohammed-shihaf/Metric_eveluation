@@ -10,11 +10,20 @@ import streamlit as st
 
 
 class _LiveLog(io.StringIO):
-    def __init__(self, box, max_lines=200):
+    def __init__(self, box, max_lines=200, min_interval=0.4):
         super().__init__()
         self._box = box
         self._lines = []
         self._max = max_lines
+        self._min_interval = min_interval
+        self._last_render = 0.0
+
+    def _render(self, force=False):
+        now = time.time()
+        if not force and (now - self._last_render) < self._min_interval:
+            return
+        self._last_render = now
+        self._box.code("\n".join(self._lines[-40:]), language=None)
 
     def write(self, s):
         if not s:
@@ -25,8 +34,11 @@ class _LiveLog(io.StringIO):
                 self._lines.append(line.rstrip())
         if len(self._lines) > self._max:
             self._lines = self._lines[-self._max :]
-        self._box.code("\n".join(self._lines[-40:]), language=None)
+        self._render()
         return len(s)
+
+    def flush(self):
+        self._render(force=True)
 
 
 class _MultiRedirect(object):
@@ -69,6 +81,7 @@ class RunPanel(object):
         self._status.__enter__()
         self.bar = st.progress(0.0)
         self.status_line = st.empty()
+        self.detail_line = st.empty()
         self.log_box = st.empty()
         self._log_stream = _LiveLog(self.log_box)
         return self
@@ -82,7 +95,9 @@ class RunPanel(object):
             % (self.title, phase, current, total, branch or "—")
         )
         if message:
-            st.caption(message)
+            self.detail_line.caption(message)
+        else:
+            self.detail_line.empty()
 
     def hold_until(self, start_ts, min_seconds, phase="Finalizing"):
         """Keep the panel alive until min_seconds elapsed from start_ts."""

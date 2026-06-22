@@ -36,6 +36,22 @@ def metric_options(technique_code, registry=None):
     return parse_metrics_filter("all", technique_code, reg)
 
 
+def qualified_metric_choices(technique_codes, registry=None):
+    """TECH:METRIC tokens for sidebar multiselect."""
+    reg = registry or load_registry()
+    choices = []
+    for tc in technique_codes or []:
+        for m in metric_options(tc, reg):
+            choices.append("%s:%s" % (tc, m))
+    return sorted(set(choices))
+
+
+def full_scope_branch_count(registry=None, version="2.6"):
+    reg = registry or load_registry()
+    types = branch_type_options(reg)
+    return len(list(iter_branches("all", "all", types, version, reg)))
+
+
 def branch_type_options(registry=None):
     reg = registry or load_registry()
     return parse_types_arg(None, reg)

@@ -342,21 +342,32 @@ def verify_generated_branch(branch_dir, tech, metric, bt, version, language, pro
 
         _report("verify", "running pytest")
         try:
-            proc = subprocess.run(
-                [sys.executable, "-m", "pytest", "tests/", "-q", "--tb=line"],
+            start_ts = time.time()
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "pytest", "tests/", "-q", "--tb=line", "-x"],
                 cwd=branch_dir,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=_pytest_timeout_sec(),
-                check=False,
             )
-            combined = (proc.stdout or "") + (proc.stderr or "")
-            passed_m = re.search(r"(\d+)\s+passed", combined)
-            failed_m = re.search(r"(\d+)\s+failed", combined)
+            timeout_sec = _pytest_timeout_sec()
+            while proc.poll() is None:
+                elapsed = int(time.time() - start_ts)
+                if elapsed >= timeout_sec:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                    return {"ok": False, "loc": loc, "messages": messages + ["pytest: timeout"]}
+                if progress_callback:
+                    progress_callback("verify", "pytest running (%ds)" % elapsed)
+                time.sleep(1.0)
+            combined_text, _stderr = proc.communicate(timeout=10)
+            combined_text = combined_text or ""
+            passed_m = re.search(r"(\d+)\s+passed", combined_text)
+            failed_m = re.search(r"(\d+)\s+failed", combined_text)
             n_passed = int(passed_m.group(1)) if passed_m else 0
             n_failed = int(failed_m.group(1)) if failed_m else 0
             if proc.returncode != 0 and n_passed == 0 and n_failed == 0:
-                detail = combined.strip()[:200] or "pytest failed"
+                detail = combined_text.strip()[:200] or "pytest failed"
                 return {"ok": False, "loc": loc, "messages": messages + ["pytest: %s" % detail]}
             messages.append("pytest: %d passed, %d failed" % (n_passed, n_failed))
             if n_failed > 0:

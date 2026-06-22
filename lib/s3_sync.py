@@ -91,6 +91,37 @@ def _s3_client():
     return boto3.client("s3")
 
 
+def s3_live_check():
+    """Verify AWS credentials against S3 (lightweight list call).
+
+    Returns ``{ok, status, reason}`` where *status* is ``OK``, ``AUTH``, ``SKIPPED``,
+    or ``ERROR``.
+    """
+    key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+    secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+    shared_creds = (Path.home() / ".aws" / "credentials").is_file()
+    if not ((key and secret) or shared_creds):
+        return {
+            "ok": False,
+            "status": "SKIPPED",
+            "reason": "AWS credentials not configured",
+        }
+
+    cfg = _s3_config()
+    try:
+        s3 = _s3_client()
+        s3.list_objects_v2(
+            Bucket=cfg["bucket"],
+            Prefix=cfg["search_prefix"],
+            MaxKeys=1,
+        )
+        return {"ok": True, "status": "OK", "reason": ""}
+    except Exception as exc:
+        if _aws_auth_error(exc):
+            return {"ok": False, "status": "AUTH", "reason": AWS_AUTH_REASON}
+        return {"ok": False, "status": "ERROR", "reason": str(exc)}
+
+
 def _normalize_prefix(prefix):
     return prefix if prefix.endswith("/") else prefix + "/"
 
