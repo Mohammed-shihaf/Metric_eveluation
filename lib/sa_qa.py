@@ -73,7 +73,7 @@ def _parse_env_file(path):
 
 def load_env(path, override=False):
     if not os.path.isfile(path):
-        print("WARNING: env file not found: %s" % path, file=sys.stderr, flush=True)
+        # Optional locally; hosted deployments inject config via process env.
         return
     parsed = _parse_env_file(path)
     for k, v in parsed.items():
@@ -84,7 +84,6 @@ def load_env(path, override=False):
 def reload_env_keys(path, keys, override=True):
     """Re-read selected keys from an env file into os.environ."""
     if not os.path.isfile(path):
-        print("WARNING: env file not found: %s" % path, file=sys.stderr, flush=True)
         return 0
     parsed = _parse_env_file(path)
     key_set = frozenset(keys) if keys else None

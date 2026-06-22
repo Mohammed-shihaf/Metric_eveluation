@@ -72,9 +72,18 @@ def _branch_allowed(branch):
     return True
 
 
+def _aws_shared_credentials_path():
+    try:
+        return Path.home() / ".aws" / "credentials"
+    except RuntimeError:
+        return Path("/nonexistent/.aws/credentials")
+
+
 def _s3_client():
     import boto3
+    from botocore.config import Config
 
+    config = Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 1})
     key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
     secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
     token = os.environ.get("AWS_SESSION_TOKEN", "").strip()
@@ -84,11 +93,12 @@ def _s3_client():
             "aws_access_key_id": key,
             "aws_secret_access_key": secret,
             "region_name": region,
+            "config": config,
         }
         if token:
             kwargs["aws_session_token"] = token
         return boto3.client("s3", **kwargs)
-    return boto3.client("s3")
+    return boto3.client("s3", config=config)
 
 
 def s3_live_check():
@@ -99,7 +109,7 @@ def s3_live_check():
     """
     key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
     secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
-    shared_creds = (Path.home() / ".aws" / "credentials").is_file()
+    shared_creds = _aws_shared_credentials_path().is_file()
     if not ((key and secret) or shared_creds):
         return {
             "ok": False,

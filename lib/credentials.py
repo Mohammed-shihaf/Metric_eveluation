@@ -68,6 +68,14 @@ def _url_matches_qa_op(key):
     return actual.lower() == expected.rstrip("/").lower()
 
 
+def _aws_shared_credentials_path():
+    """Return ~/.aws/credentials when home is resolvable, else a non-existent path."""
+    try:
+        return Path.home() / ".aws" / "credentials"
+    except RuntimeError:
+        return Path("/nonexistent/.aws/credentials")
+
+
 def _testable_urls_ok(testable_rows):
     """True when core Testable API URLs are set (file or process env)."""
     core = [r for r in testable_rows if r["key"] in CORE_TESTABLE_URL_KEYS]
@@ -117,7 +125,7 @@ def audit_credentials(env_file=None, root=None):
     s3_ok = all(r["configured"] for r in s3 if r["group"] == "s3_required")
     # boto3 can use shared credentials file even when env vars unset
     if not s3_ok:
-        aws_shared = (Path.home() / ".aws" / "credentials").is_file()
+        aws_shared = _aws_shared_credentials_path().is_file()
         if aws_shared:
             s3_ok = True
 

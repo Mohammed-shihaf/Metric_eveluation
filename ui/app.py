@@ -562,7 +562,10 @@ def _readiness():
         audit["s3_live_ok"] = bool(st.session_state.get("_s3_live_ok"))
         audit["s3_live_reason"] = st.session_state.get("_s3_live_reason") or ""
     else:
-        live = s3_live_check()
+        try:
+            live = s3_live_check()
+        except Exception as exc:
+            live = {"ok": False, "reason": str(exc)}
         st.session_state["_s3_live_check_ts"] = now
         st.session_state["_s3_live_ok"] = live.get("ok", False)
         st.session_state["_s3_live_reason"] = live.get("reason") or ""
@@ -2785,6 +2788,7 @@ def _render_whitebox_qa_login(env_file, show_header=True, switch_mode=False):
             with st.spinner("Signing in to Testable QA..."):
                 ok, msg = _apply_qa_login(env_file, email, qa_password, interactive=True)
             if ok:
+                st.session_state.pop("show_qa_switch_form", None)
                 _request_pipeline_tab("Whitebox")
                 st.rerun()
             else:
@@ -3033,10 +3037,21 @@ def _tab_whitebox(filters):
         _render_whitebox_qa_login(filters["env_file"])
     else:
         st.success("Whitebox will run as **%s**." % email_for_auth)
-        with st.expander("Switch Testable QA account", expanded=False):
-            if st.button("Sign out QA only", key="whitebox_sign_out_qa"):
+        sign_out_col, switch_col = st.columns([1, 1])
+        with sign_out_col:
+            if st.button("Sign out QA only", key="whitebox_sign_out_qa", width="stretch"):
+                st.session_state.pop("show_qa_switch_form", None)
                 _sign_out_qa_only()
                 st.rerun()
+        with switch_col:
+            if st.button(
+                "Switch Testable QA account",
+                key="whitebox_show_switch",
+                width="stretch",
+            ):
+                st.session_state["show_qa_switch_form"] = True
+                st.rerun()
+        if st.session_state.get("show_qa_switch_form"):
             _render_whitebox_qa_login(
                 filters["env_file"],
                 show_header=False,
@@ -4205,6 +4220,14 @@ def _tab_comparison(filters):
 
 
 def main():
+    try:
+        _main_impl()
+    except Exception as exc:
+        st.error("Application error — refresh the page or contact support if this persists.")
+        st.exception(exc)
+
+
+def _main_impl():
     load_env(str(ROOT / ".env.local"))
     apply_github_oauth_redirect_uri()
     _handle_oauth_callback()
