@@ -1,0 +1,150 @@
+name: Assurance Studio QA-OP
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'ui/**'
+      - 'lib/**'
+      - 'tools/**'
+      - 'scripts/**'
+      - 'config/**'
+      - 'requirements.txt'
+      - 'Dockerfile'
+      - '.github/workflows/assurance-studio-qa-op.yml'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-2
+  ECR_REPOSITORY: assurance-studio-qa-op
+  DOCKERFILE_PATH: Dockerfile
+  BUILD_CONTEXT: .
+  MANIFEST_PATH: cluster-manifest/qa-op/assurance-studio/deployment.yaml
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-24.04
+    outputs:
+      image-uri: ${{ steps.image-meta.outputs.image }}
+      short-sha: ${{ steps.git.outputs.sha }}
+      image-repo: ${{ steps.export-cd.outputs.image_repo }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get git SHA
+        id: git
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push AMD64 Docker image
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ env.BUILD_CONTEXT }}
+          file: ${{ env.DOCKERFILE_PATH }}
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.git.outputs.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Set image output
+        id: image-meta
+        run: echo "image=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.git.outputs.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Export CD metadata
+        id: export-cd
+        run: echo "image_repo=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_OUTPUT
+
+      - name: Image pushed
+        run: |
+          echo "✅ Assurance Studio AMD64 image pushed"
+          echo "Repository: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}"
+          echo "Platform: linux/amd64"
+          echo "Tags: ${{ steps.git.outputs.sha }}, latest"
+
+  deploy-manifest:
+    needs: build-and-push
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout infra repo
+        uses: actions/checkout@v6
+        with:
+          repository: testable-platform/infra
+          token: ${{ secrets.GH_TOKEN }}
+          ref: main
+          fetch-depth: 0
+
+      - name: Update manifest image tag and push
+        env:
+          IMAGE_REPO: ${{ needs.build-and-push.outputs.image-repo }}
+          SHORT_SHA: ${{ needs.build-and-push.outputs.short-sha }}
+          MANIFEST_PATH: ${{ env.MANIFEST_PATH }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git pull --rebase origin main
+
+          # Align legacy us-east-2 ECR host in manifests with the CI registry (IMAGE_REPO prefix, e.g. ap-south-2).
+          ECR_HOST="${IMAGE_REPO%%/*}"
+          sed -i "s|759498976252\.dkr\.ecr\.us-east-2\.amazonaws\.com|${ECR_HOST}|g" "$MANIFEST_PATH"
+
+          if ! grep -Fq "${IMAGE_REPO}:" "$MANIFEST_PATH"; then
+            echo "ERROR: Expected image repository ${IMAGE_REPO} not found in ${MANIFEST_PATH}"
+            exit 1
+          fi
+          IMAGE_REPO_ESC=$(printf '%s\n' "${IMAGE_REPO}" | sed 's/[.[\\*^$()+?{|]/\\&/g')
+          sed -i -E "s|(image:[[:space:]]*${IMAGE_REPO_ESC}:).*|\\1${SHORT_SHA}|" "$MANIFEST_PATH"
+          if ! grep -Fq "${IMAGE_REPO}:${SHORT_SHA}" "$MANIFEST_PATH"; then
+            echo "ERROR: Manifest tag replacement failed for ${MANIFEST_PATH}"
+            exit 1
+          fi
+          echo "Updated ${MANIFEST_PATH} with tag ${SHORT_SHA}"
+          grep -E "image:[[:space:]].*" "$MANIFEST_PATH" | head -1
+
+          if git diff --quiet "$MANIFEST_PATH"; then
+            echo "No manifest change detected; skipping commit."
+            exit 0
+          fi
+
+          git add "$MANIFEST_PATH"
+          git commit -m "chore(cd): update assurance-studio QA-OP image tag to ${SHORT_SHA}"
+
+          max_attempts=8
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            if git push origin "HEAD:refs/heads/main"; then
+              echo "Push succeeded."
+              exit 0
+            fi
+            echo "Push failed (attempt ${attempt}/${max_attempts}); rebasing onto origin/main and retrying..."
+            git fetch origin main
+            git rebase "origin/main" || { echo "Rebase failed; resolve conflicts manually if this persists."; exit 1; }
+            attempt=$((${attempt} + 1))
+            sleep $((${attempt} * 3))
+          done
+          echo "ERROR: Push failed after ${max_attempts} attempts."
+          exit 1
