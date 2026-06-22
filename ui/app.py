@@ -18,6 +18,7 @@ WHITEBOX_AUTO_PREVIEW_LIMIT = 12
 LARGE_SCOPE_THRESHOLD = 48
 TABLE_PAGE_SIZE = 50
 
+from lib.app_urls import apply_github_oauth_redirect_uri, resolve_github_oauth_redirect_uri  # noqa: E402
 from lib.branch_pipeline import (  # noqa: E402
     apply_current_scores,
     branch_materialized,
@@ -804,12 +805,12 @@ def _ensure_oauth_authorize_url(app_user, login_hint=None):
 
 
 def _github_oauth_env_display():
-    redirect_uri = os.getenv("GITHUB_OAUTH_REDIRECT_URI", "").strip()
+    redirect_uri = resolve_github_oauth_redirect_uri()
     return {
         "client_id": os.getenv("GITHUB_OAUTH_CLIENT_ID", "").strip(),
         "redirect_uri": redirect_uri,
         "app_slug": os.getenv("GITHUB_APP_SLUG", "").strip() or "testable-assurance-studio",
-        "callback_hint": redirect_uri or "http://localhost:8501/",
+        "callback_hint": redirect_uri,
     }
 
 
@@ -4182,6 +4183,7 @@ def _tab_comparison(filters):
 
 def main():
     load_env(str(ROOT / ".env.local"))
+    apply_github_oauth_redirect_uri()
     _handle_oauth_callback()
     _sync_github_session_from_db()
     _sync_repo_artifacts()

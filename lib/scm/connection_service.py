@@ -5,6 +5,7 @@ from __future__ import print_function
 import os
 from dataclasses import dataclass
 
+from lib.app_urls import resolve_github_oauth_redirect_uri
 from lib.github_auth import check_app_repo_access
 from lib.scm import github_oauth
 from lib.scm.github_repos import list_user_repositories
@@ -45,8 +46,11 @@ class GitHubConnectionService:
     def __init__(self):
         self.client_id = os.getenv("GITHUB_OAUTH_CLIENT_ID", "").strip()
         self.client_secret = os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "").strip()
-        self.redirect_uri = os.getenv("GITHUB_OAUTH_REDIRECT_URI", "").strip()
         self.token_secret = os.getenv("SCM_TOKEN_SECRET", "").strip()
+
+    @property
+    def redirect_uri(self):
+        return resolve_github_oauth_redirect_uri()
 
     def is_configured(self):
         return bool(
