@@ -1,0 +1,18 @@
+{
+  "base": "http://localhost:8501",
+  "techniques": [
+    "SA",
+    "SX"
+  ],
+  "expected_in_scope": 52,
+  "passed": 0,
+  "failed": 1,
+  "results": [
+    {
+      "name": "unexpected",
+      "ok": false,
+      "detail": "Page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:8501/\nCall log:\n  - navigating to \"http://localhost:8501/\", waiting until \"networkidle\"\n"
+    }
+  ],
+  "out": "D:\\Metric_evaluation\\docs\\e2e-demo\\flow-2tech-20260618-192703"
+}

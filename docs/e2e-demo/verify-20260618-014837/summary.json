@@ -1,0 +1,123 @@
+{
+  "base": "http://localhost:8501",
+  "passed": 11,
+  "failed": 12,
+  "results": [
+    {
+      "name": "app_load",
+      "ok": true,
+      "detail": "http://localhost:8501"
+    },
+    {
+      "name": "streamlit_shell",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "tab_branches",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "tab_whitebox",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "tab_local_tools",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "tab_sonarqube",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "tab_compare",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "sidebar_language_version",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "sidebar_github_section",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "sidebar_testable_qa_section",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "qa_login",
+      "ok": false,
+      "detail": "no login fields"
+    },
+    {
+      "name": "branches_generate_button",
+      "ok": true,
+      "detail": "disabled=True"
+    },
+    {
+      "name": "branches_strength_caption",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "sidebar_github_switch",
+      "ok": false,
+      "detail": "switch link visible when not connected"
+    },
+    {
+      "name": "sidebar_github_connect",
+      "ok": false,
+      "detail": "connect visible or QA gate"
+    },
+    {
+      "name": "whitebox_header",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "whitebox_run_button",
+      "ok": true,
+      "detail": "disabled=True"
+    },
+    {
+      "name": "whitebox_branch_picker",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "whitebox_stable_5s",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "sidebar_select_widgets",
+      "ok": true,
+      "detail": "count=3"
+    },
+    {
+      "name": "tab_load_local_tools",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "tab_load_sonarqube",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "tab_load_compare",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "screenshots": "D:\\Metric_evaluation\\docs\\e2e-demo\\verify-20260618-014837"
+}

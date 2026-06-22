@@ -1,0 +1,38 @@
+{
+  "base": "http://localhost:8501",
+  "techniques": [
+    "SA",
+    "SX"
+  ],
+  "expected_in_scope": 52,
+  "passed": 3,
+  "failed": 2,
+  "results": [
+    {
+      "name": "app_load",
+      "ok": true,
+      "detail": "http://localhost:8501"
+    },
+    {
+      "name": "sidebar_visible",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "select_technique_SA",
+      "ok": true,
+      "detail": "SA \u2014 Cyclomatic Complexity"
+    },
+    {
+      "name": "select_technique_SX",
+      "ok": false,
+      "detail": "option not found"
+    },
+    {
+      "name": "unexpected",
+      "ok": false,
+      "detail": "Locator.check: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator(\"[data-testid=\\\"stSidebarContent\\\"]\").get_by_role(\"checkbox\", name=\"All metrics\")\n    - locator resolved to <input value=\"\" type=\"checkbox\" aria-checked=\"false\" aria-label=\"All metrics\" class=\"st-e8 st-e9 st-ea st-cd st-d4 st-eb st-c3\"/>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 100ms\n    54 \u00d7 waiting for element to be visible, enabled and stable\n       - element is not visible\n     - retrying click action\n       - waiting 500ms\n"
+    }
+  ],
+  "out": "D:\\Metric_evaluation\\docs\\e2e-demo\\flow-2tech-20260618-193107"
+}

@@ -1,0 +1,113 @@
+{
+  "base": "http://localhost:8501",
+  "techniques": [
+    "SA",
+    "SX"
+  ],
+  "expected_in_scope": 52,
+  "passed": 19,
+  "failed": 1,
+  "results": [
+    {
+      "name": "app_load",
+      "ok": true,
+      "detail": "http://localhost:8501"
+    },
+    {
+      "name": "sidebar_visible",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "select_technique_SA",
+      "ok": true,
+      "detail": "SA \u2014 Cyclomatic Complexity"
+    },
+    {
+      "name": "select_technique_SX",
+      "ok": true,
+      "detail": "SX \u2014 Static Vulnerabilities (SAST)"
+    },
+    {
+      "name": "all_metrics_checked",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "in_scope_count",
+      "ok": true,
+      "detail": "ui=52 expected=52"
+    },
+    {
+      "name": "branches_no_exception",
+      "ok": true,
+      "detail": "exceptions=0"
+    },
+    {
+      "name": "branches_generate_branches",
+      "ok": true,
+      "detail": "disabled=False"
+    },
+    {
+      "name": "branches_validate_branches",
+      "ok": true,
+      "detail": "disabled=False"
+    },
+    {
+      "name": "branches_push_to_github",
+      "ok": true,
+      "detail": "disabled=True"
+    },
+    {
+      "name": "branches_pipeline_progress",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "branches_step_metrics",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "whitebox_no_exception",
+      "ok": true,
+      "detail": "exceptions=0"
+    },
+    {
+      "name": "whitebox_header",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "whitebox_branch_picker",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "whitebox_picker_options",
+      "ok": false,
+      "detail": "options=0 expected>=1"
+    },
+    {
+      "name": "whitebox_run_button",
+      "ok": true,
+      "detail": "disabled=True"
+    },
+    {
+      "name": "tab_local_tools",
+      "ok": true,
+      "detail": "exceptions=0"
+    },
+    {
+      "name": "tab_sonarqube",
+      "ok": true,
+      "detail": "exceptions=0"
+    },
+    {
+      "name": "tab_compare",
+      "ok": true,
+      "detail": "exceptions=0"
+    }
+  ],
+  "out": "D:\\Metric_evaluation\\docs\\e2e-demo\\flow-2tech-20260618-193247"
+}

@@ -73,8 +73,7 @@ def _parse_env_file(path):
 
 def load_env(path, override=False):
     if not os.path.isfile(path):
-        # .env.local is optional: in container deployments config is injected via
-        # environment variables (e.g. a ConfigMap), so a missing file is expected.
+        print("WARNING: env file not found: %s" % path, file=sys.stderr, flush=True)
         return
     parsed = _parse_env_file(path)
     for k, v in parsed.items():
@@ -85,7 +84,7 @@ def load_env(path, override=False):
 def reload_env_keys(path, keys, override=True):
     """Re-read selected keys from an env file into os.environ."""
     if not os.path.isfile(path):
-        # Optional file (see load_env); environment-injected config is the fallback.
+        print("WARNING: env file not found: %s" % path, file=sys.stderr, flush=True)
         return 0
     parsed = _parse_env_file(path)
     key_set = frozenset(keys) if keys else None

@@ -1,0 +1,63 @@
+{
+  "base": "http://localhost:8501",
+  "passed": 11,
+  "failed": 0,
+  "results": [
+    {
+      "name": "app_load",
+      "ok": true,
+      "detail": "http://localhost:8501"
+    },
+    {
+      "name": "account_header",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "selection_header",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "login_fields",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "qa_login",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "tab_branches",
+      "ok": true,
+      "detail": "exceptions=0"
+    },
+    {
+      "name": "tab_whitebox",
+      "ok": true,
+      "detail": "exceptions=0"
+    },
+    {
+      "name": "tab_local_tools",
+      "ok": true,
+      "detail": "exceptions=0"
+    },
+    {
+      "name": "tab_sonarqube",
+      "ok": true,
+      "detail": "exceptions=0"
+    },
+    {
+      "name": "tab_compare",
+      "ok": true,
+      "detail": "exceptions=0"
+    },
+    {
+      "name": "in_scope_metric",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "out": "D:\\Metric_evaluation\\docs\\e2e-demo\\verify-qa-20260618-014911"
+}
