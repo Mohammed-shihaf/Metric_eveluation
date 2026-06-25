@@ -77,6 +77,7 @@ from lib.proofs import (  # noqa: E402
     format_branch_issues,
     load_proof_bundle,
     whitebox_completion,
+    WHITEBOX_DONE_STATUSES,
 )
 from lib.compare import summarize_comparisons  # noqa: E402
 from lib.report_sync_service import stop as stop_report_sync  # noqa: E402
@@ -3271,7 +3272,7 @@ def _tab_whitebox(filters):
         })
 
     n_on_github = len([r for r in readiness if r["on_github"] == "yes"])
-    n_completed = len([r for r in readiness if r["whitebox"] == "COMPLETED"])
+    n_completed = len([r for r in readiness if r["whitebox"] in WHITEBOX_DONE_STATUSES])
     n_not_in_catalog = len([
         b for b in branches
         if wb_status.get(b, {}).get("status") == "SKIPPED"
@@ -3610,14 +3611,14 @@ def _tab_whitebox(filters):
                     "failed": info.get("failed_tasks") if info.get("total_tasks") else "—",
                     "run_health": info.get("run_health", "—"),
                     "detail": info.get("detail", ""),
-                    "taxonomy_detail": info.get("detail", "") if info.get("status") != "COMPLETED" else "",
+                    "taxonomy_detail": info.get("detail", "") if info.get("status") not in WHITEBOX_DONE_STATUSES else "",
                     "s3_detail": "Download in Compare",
                     "failing_sections": info.get("failing_sections") or [],
                     "issues": format_branch_issues(info),
                     "taxonomy_json": "",
                     "taxonomy_html": "",
                 }
-                if info.get("status") == "COMPLETED":
+                if info.get("status") in WHITEBOX_DONE_STATUSES:
                     try:
                         with panel.stdout_redirect():
                             tax_proof = collect_taxonomy_proof(
@@ -3681,7 +3682,7 @@ def _tab_whitebox(filters):
                 if sections:
                     with st.expander("Failing sections — %s" % r["branch"]):
                         st.dataframe(sections, width="stretch")
-            completed = sum(1 for r in proof_rows if r["whitebox"] == "COMPLETED")
+            completed = sum(1 for r in proof_rows if r["whitebox"] in WHITEBOX_DONE_STATUSES)
             degraded = [
                 r for r in proof_rows
                 if wb_after.get(r["branch"], {}).get("run_health") == "DEGRADED"
@@ -3712,10 +3713,12 @@ def _tab_whitebox(filters):
                 st.success("Whitebox completed for all %d selected branches" % completed)
                 panel.set_result("complete", "complete")
         st.toast("Whitebox batch finished", icon="✅")
+        st.session_state["wb_just_completed"] = True
+        st.rerun()
 
     elif st.session_state.get("last_whitebox_status"):
         wb_detail = st.session_state.get("last_whitebox_detail") or {}
-        with st.expander("Previous whitebox run results", expanded=False):
+        with st.expander("Previous whitebox run results", expanded=st.session_state.pop("wb_just_completed", False)):
             st.dataframe(
                 [
                     _whitebox_result_row(
@@ -4088,7 +4091,7 @@ def _tab_comparison(filters):
     st.header("5 — Compare S3 / local / sonar (taxonomy reference)")
     branches = filters["summary"]["branches"]
     wb = whitebox_completion(branches, root=str(ROOT))
-    completed = [b for b in branches if wb.get(b, {}).get("status") == "COMPLETED"]
+    completed = [b for b in branches if wb.get(b, {}).get("status") in WHITEBOX_DONE_STATUSES]
     if not completed:
         st.info("No whitebox-completed branches. Run Page 2 first.")
         return

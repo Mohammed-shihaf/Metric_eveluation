@@ -28,7 +28,7 @@ def _max_per_tick():
 
 
 def _branches_needing_sync(scope_branches, root):
-    from lib.proofs import whitebox_completion
+    from lib.proofs import whitebox_completion, WHITEBOX_DONE_STATUSES
     from lib.report_schema import find_s3_report_path
 
     repo_root = Path(root or ROOT)
@@ -37,7 +37,7 @@ def _branches_needing_sync(scope_branches, root):
     pending = []
     for bname in scope_branches:
         info = wb.get(bname, {})
-        if info.get("status") != "COMPLETED":
+        if info.get("status") not in WHITEBOX_DONE_STATUSES:
             continue
         if not info.get("expects_s3", True):
             continue

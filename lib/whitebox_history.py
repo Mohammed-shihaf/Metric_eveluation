@@ -112,7 +112,7 @@ def split_completed_pending(branches, taxonomy_root="taxonomy_reports", root=Non
     pending = []
     for bname in branches:
         info = wb.get(bname, {})
-        if info.get("status") == "COMPLETED":
+        if info.get("status") in ("COMPLETED", "COMPLETED_WITH_FAILURES"):
             meta, class_dir = resolve_branch_taxonomy_meta(
                 bname, taxonomy_root, str(repo_root),
             )

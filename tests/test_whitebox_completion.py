@@ -10,7 +10,7 @@ import unittest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
 
-from lib.proofs import whitebox_completion  # noqa: E402
+from lib.proofs import whitebox_completion, format_branch_issues  # noqa: E402
 
 
 def _taxonomy_html(branch, run_id, commit_sha="abc123def456"):
@@ -119,7 +119,7 @@ class WhiteboxCompletionTests(unittest.TestCase):
             import json
             json.dump({"gate_status": "completed", "weighted_breakdown": []}, fh)
         result = whitebox_completion([branch], root=self._tmpdir)
-        self.assertEqual(result[branch]["status"], "COMPLETED")
+        self.assertEqual(result[branch]["status"], "COMPLETED_WITH_FAILURES")
         self.assertEqual(result[branch]["commit_sha"], "5677904bbd7e61627c206de4cbb31629c0b25e19")
         self.assertFalse(result[branch]["expects_s3"])
 
@@ -146,9 +146,36 @@ class WhiteboxCompletionTests(unittest.TestCase):
             import json
             json.dump({"gate_status": "completed", "weighted_breakdown": []}, fh)
         result = whitebox_completion([branch], root=self._tmpdir)
-        self.assertEqual(result[branch]["status"], "COMPLETED")
+        self.assertEqual(result[branch]["status"], "COMPLETED_WITH_FAILURES")
         self.assertEqual(result[branch]["run_health"], "OK")
         self.assertEqual(result[branch]["failed_tasks"], 1)
+
+    def test_failed_run_without_taxonomy_report(self):
+        branch = "SA_Decision-Outcome-Verification_Bug_2.6"
+        class_dir = self._class_dir("Structural Analysis")
+        import json
+        with open(os.path.join(class_dir, "manifest.json"), "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "runs": [
+                        {
+                            "branch": branch,
+                            "run_id": "run-fail-001",
+                            "status": "failed",
+                            "run_status": "failed",
+                            "total_tasks": 28,
+                            "completed_tasks": 0,
+                            "failed_tasks": 1,
+                        }
+                    ]
+                },
+                fh,
+            )
+        result = whitebox_completion([branch], root=self._tmpdir)
+        info = result[branch]
+        self.assertEqual(info["status"], "FAILED")
+        issues = format_branch_issues(info)
+        self.assertTrue(any("Whitebox failed" in line for line in issues))
 
 
 if __name__ == "__main__":

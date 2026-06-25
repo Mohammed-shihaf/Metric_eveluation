@@ -253,7 +253,7 @@ class WhiteboxRunHealthTests(unittest.TestCase):
             }, fh)
         result = whitebox_completion([branch], root=tmp)
         info = result[branch]
-        self.assertEqual(info["status"], "COMPLETED")
+        self.assertEqual(info["status"], "COMPLETED_WITH_FAILURES")
         self.assertEqual(info["run_health"], "OK")
         self.assertEqual(info["failed_tasks"], 1)
 

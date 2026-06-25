@@ -46,6 +46,7 @@ REPORT_LOCAL = "local_report.json"
 REPORT_SONAR = "sonar_report.json"
 
 USABLE_REPORT_STATUSES = frozenset(("PASS", "FAIL", "WARN"))
+WHITEBOX_DONE_STATUSES = ("COMPLETED", "COMPLETED_WITH_FAILURES")
 
 
 @contextlib.contextmanager
@@ -110,6 +111,11 @@ def format_branch_issues(info, s3_report=None):
         issues.append("Skipped: %s" % (info.get("detail") or "not in catalog"))
     elif status == "NOT_COMPLETED":
         issues.append("Not completed: %s" % (info.get("detail") or "no taxonomy report"))
+    elif status == "FAILED":
+        issues.append(
+            "Whitebox failed: %s"
+            % (info.get("run_health_detail") or info.get("detail") or "run failed")
+        )
 
     run_health = info.get("run_health", "")
     if run_health == "DEGRADED":
@@ -252,9 +258,14 @@ def whitebox_completion(branches, taxonomy_root="taxonomy_reports", root=None, r
             run_health = "UNKNOWN"
             run_health_detail = ""
 
+        has_failures = bool(failed_tasks) or run_status in ("failed", "partial")
+
         if bname in manifest_errors and not has_taxonomy:
             status = "ERROR"
             detail = manifest_errors[bname]
+        elif has_taxonomy and has_failures:
+            status = "COMPLETED_WITH_FAILURES"
+            detail = run_health_detail or "taxonomy produced with platform task failures"
         elif has_taxonomy and run_id:
             status = "COMPLETED"
             detail = "taxonomy report produced"
@@ -264,6 +275,9 @@ def whitebox_completion(branches, taxonomy_root="taxonomy_reports", root=None, r
         elif bname in manifest_errors:
             status = "ERROR"
             detail = manifest_errors[bname]
+        elif has_failures:
+            status = "FAILED"
+            detail = run_health_detail or "whitebox run failed"
         elif bname in catalog_skipped:
             status = "SKIPPED"
             detail = (
@@ -376,7 +390,7 @@ def compare_readiness(branches, root=None):
 def completed_whitebox_branches(branches, taxonomy_root="taxonomy_reports", root=None, registry=None):
     """Return branch names with COMPLETED whitebox status."""
     status = whitebox_completion(branches, taxonomy_root, root, registry)
-    return [b for b in branches if status.get(b, {}).get("status") == "COMPLETED"]
+    return [b for b in branches if status.get(b, {}).get("status") in WHITEBOX_DONE_STATUSES]
 
 
 def proof_dir(root, technique_code, branch_name):
@@ -864,7 +878,7 @@ def collect_local_batch(
     runnable = []
     for bname in branches:
         wb_info = wb.get(bname, {})
-        if require_whitebox and wb_info.get("status") != "COMPLETED":
+        if require_whitebox and wb_info.get("status") not in WHITEBOX_DONE_STATUSES:
             row = {
                 "branch_name": bname,
                 "status": "SKIPPED",
@@ -1046,7 +1060,7 @@ def collect_sonar_batch(
             progress_callback("sonar", idx - 1, total, bname, "starting")
         row = {"branch_name": bname, "server_msg": server_msg}
         wb_info = wb.get(bname, {})
-        if require_whitebox and wb_info.get("status") != "COMPLETED":
+        if require_whitebox and wb_info.get("status") not in WHITEBOX_DONE_STATUSES:
             row["status"] = "SKIPPED"
             row["error"] = "whitebox not completed"
             results.append(row)
