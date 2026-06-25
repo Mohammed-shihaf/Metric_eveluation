@@ -28,3 +28,7 @@ docs/04-setup-and-configuration.md
 docs/05-module-reference.md
 docs/images/
 scm_connections.db
+.session_cache/
+
+kubeconfig.yaml
+pod_logs.txt

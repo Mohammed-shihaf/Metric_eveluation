@@ -2,6 +2,7 @@
 
 from __future__ import print_function
 
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,8 @@ def branch_run_history(branch_name, taxonomy_root="taxonomy_reports", root=None)
         _report_folders,
     )
 
+    if taxonomy_root == "taxonomy_reports":
+        taxonomy_root = os.environ.get("OUTPUT_DIR", "").strip() or taxonomy_root
     repo_root = Path(root or ROOT)
     meta, class_dir = resolve_branch_taxonomy_meta(
         branch_name, taxonomy_root, str(repo_root),
@@ -101,6 +104,8 @@ def split_completed_pending(branches, taxonomy_root="taxonomy_reports", root=Non
     from lib.proofs import whitebox_completion
     from lib.taxonomy_meta import resolve_branch_taxonomy_meta
 
+    if taxonomy_root == "taxonomy_reports":
+        taxonomy_root = os.environ.get("OUTPUT_DIR", "").strip() or taxonomy_root
     repo_root = Path(root or ROOT)
     wb = whitebox_completion(branches, taxonomy_root=taxonomy_root, root=str(repo_root))
     completed = []

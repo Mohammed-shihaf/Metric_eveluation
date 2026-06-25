@@ -1,0 +1,4 @@
+---
+alwaysApply: true
+---
+Only modify the exact files/functions enumerated in the active task; never refactor, rename, reformat, reorganize imports, or change behavior outside those spots; never run git commit/push/merge/rebase or edit CI/workflows; if a broader change seems needed, stop and report instead of doing it.

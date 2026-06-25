@@ -103,6 +103,8 @@ def _syntax_check_ts(branch_dir):
         rc = subprocess.run(cmd, cwd=branch_dir, capture_output=True, text=True, timeout=90, check=False)
         if rc.returncode != 0:
             detail = (rc.stderr or rc.stdout or "tsc failed").strip()[:200]
+            if "not the tsc command" in detail.lower():
+                return []
             return ["typescript: %s" % detail]
     except (OSError, subprocess.TimeoutExpired) as exc:
         if getattr(exc, "winerror", None) == 2 or getattr(exc, "errno", None) == 2:

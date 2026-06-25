@@ -430,7 +430,6 @@ def read_remote_text(token, repo_slug, ref, path):
 def remote_branches_via_api(token, repo_slug, branch_names):
     """Check branch existence via GitHub REST API (reliable for OAuth/PAT tokens)."""
     import urllib.error
-    import urllib.parse
 
     slug = normalize_repo_slug(repo_slug)
     token = (token or "").strip()
@@ -438,15 +437,28 @@ def remote_branches_via_api(token, repo_slug, branch_names):
     if not slug or not token:
         return status
 
-    for name in branch_names:
-        enc = urllib.parse.quote(name, safe="")
-        path = "/repos/%s/branches/%s" % (slug, enc)
+    # Build a {name: sha[:12]} map of remote branches
+    branch_map = {}
+    max_pages = 10
+    for page in range(1, max_pages + 1):
+        path = "/repos/%s/branches?per_page=100&page=%d" % (slug, page)
         try:
             data = _api_request(token, path)
-            sha = ((data.get("commit") or {}).get("sha") or "")[:12]
-            status[name] = {"pushed": True, "sha": sha or None}
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError, KeyError):
-            continue
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+            break
+        if not isinstance(data, list) or not data:
+            break
+        for item in data:
+            name = (item.get("name") or "").strip()
+            sha = ((item.get("commit") or {}).get("sha") or "")[:12]
+            if name:
+                branch_map[name] = sha or None
+        if len(data) < 100:
+            break
+
+    for name in branch_names:
+        if name in branch_map:
+            status[name] = {"pushed": True, "sha": branch_map[name]}
     return status
 
 

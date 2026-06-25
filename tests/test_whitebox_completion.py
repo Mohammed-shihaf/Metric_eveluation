@@ -75,6 +75,25 @@ class WhiteboxCompletionTests(unittest.TestCase):
         result = whitebox_completion([branch], root=self._tmpdir)
         self.assertEqual(result[branch]["status"], "NOT_COMPLETED")
 
+    def test_honors_output_dir_env(self):
+        """Reports saved under OUTPUT_DIR are found even when root differs."""
+        branch = "SA_Decision-Outcome-Verification_Bug_2.6"
+        out_dir = os.path.join(self._tmpdir, "data", "taxonomy_reports")
+        os.makedirs(os.path.join(out_dir, "Structural Analysis"), exist_ok=True)
+        _write_report(os.path.join(out_dir, "Structural Analysis"), branch, "run-env-001")
+        empty_root = os.path.join(self._tmpdir, "approot")
+        os.makedirs(os.path.join(empty_root, "taxonomy_reports"), exist_ok=True)
+        old = os.environ.get("OUTPUT_DIR")
+        os.environ["OUTPUT_DIR"] = out_dir
+        try:
+            result = whitebox_completion([branch], root=empty_root)
+        finally:
+            if old is None:
+                os.environ.pop("OUTPUT_DIR", None)
+            else:
+                os.environ["OUTPUT_DIR"] = old
+        self.assertEqual(result[branch]["status"], "COMPLETED")
+
     def test_json_only_report_folder_completed(self):
         branch = "SA_Decision-Outcome-Verification_Bug_2.6"
         class_dir = self._class_dir("Structural Analysis")

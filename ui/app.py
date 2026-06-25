@@ -104,6 +104,45 @@ st.markdown(
     <style>
       [data-testid="stToolbar"], [data-testid="stStatusWidget"],
       #MainMenu, [data-testid="stDecoration"], footer {display: none !important;}
+      .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stSidebar"] {
+        background-color: #FFFFFF !important;
+        color: #1A1A1A !important;
+      }
+      .stApp, [data-testid="stAppViewContainer"] p, [data-testid="stAppViewContainer"] span, [data-testid="stAppViewContainer"] label, [data-testid="stAppViewContainer"] h1, [data-testid="stAppViewContainer"] h2, [data-testid="stAppViewContainer"] h3, [data-testid="stAppViewContainer"] h4, [data-testid="stAppViewContainer"] h5, [data-testid="stAppViewContainer"] h6 {
+        color: #1A1A1A !important;
+      }
+      [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label, [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+        color: #1A1A1A !important;
+      }
+      .stButton > button {
+        background-color: #5CB85C !important;
+        color: #FFFFFF !important;
+        border: 1px solid #5CB85C !important;
+      }
+      .stButton > button:hover {
+        background-color: #4CAE4C !important;
+        border-color: #4CAE4C !important;
+        color: #FFFFFF !important;
+      }
+      .stButton > button[data-testid*="-secondary"] {
+        background-color: #FFFFFF !important;
+        color: #5CB85C !important;
+        border: 1px solid #5CB85C !important;
+      }
+      .stButton > button[data-testid*="-secondary"] * {
+        color: #5CB85C !important;
+      }
+      .stButton > button[data-testid*="-secondary"]:hover {
+        background-color: #F0F9F0 !important;
+        color: #4CAE4C !important;
+        border-color: #4CAE4C !important;
+      }
+      .stButton > button[data-testid*="-secondary"]:hover * {
+        color: #4CAE4C !important;
+      }
+      .stButton > button[data-testid*="-primary"], .stButton > button[data-testid*="-primary"] * {
+        color: #FFFFFF !important;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -633,9 +672,10 @@ def _qa_effective_creds():
 
 def _qa_creds_ready(audit):
     """QA ready when Testable URLs are configured and credentials are available."""
-    urls_ok = audit.get("testable_urls_ok", False)
+    if not audit.get("testable_urls_ok"):
+        return False
     email, password, _ = _qa_effective_creds()
-    return urls_ok and bool(email and password)
+    return bool(email and password)
 
 
 def _app_user_email(audit=None):
@@ -720,6 +760,26 @@ def _apply_qa_login(env_file, email, password, interactive=False):
     st.session_state["qa_password_saved"] = password
     st.session_state["qa_login_ok"] = True
     st.session_state["qa_login_msg"] = msg
+
+    # Save to session cache per sid
+    sid = st.query_params.get("sid")
+    if sid:
+        secret = os.getenv("SCM_TOKEN_SECRET", "").strip()
+        if secret:
+            try:
+                cache_dir = ROOT / ".session_cache"
+                cache_dir.mkdir(exist_ok=True)
+                from lib.scm.token_encryption import encrypt_token
+                enc_pwd = encrypt_token(password)
+                sid_file = cache_dir / f"{sid}.json"
+                with open(sid_file, "w", encoding="utf-8") as fh:
+                    json.dump({
+                        "qa_email_saved": email,
+                        "qa_password_saved": enc_pwd
+                    }, fh)
+            except Exception:
+                pass
+
     return True, msg
 
 
@@ -730,6 +790,16 @@ def _sign_out_qa_only():
     st.session_state.pop("qa_login_msg", None)
     _clear_qa_session_caches()
     stop_report_sync(_app_user_email())
+
+    # Delete session cache per sid
+    sid = st.query_params.get("sid")
+    if sid:
+        try:
+            sid_file = ROOT / ".session_cache" / f"{sid}.json"
+            if sid_file.is_file():
+                sid_file.unlink()
+        except Exception:
+            pass
 
 
 def _clear_pipeline_scoped_session():
@@ -1701,7 +1771,7 @@ def _sidebar_filters():
         st.sidebar.multiselect(
             "Techniques",
             tech_codes,
-            format_func=lambda c: next(l for code, l in tech_opts if code == c),
+            format_func=lambda c: next((l for code, l in tech_opts if code == c), str(c)),
             disabled=True,
             key="sidebar_techniques_all_display",
         )
@@ -1711,7 +1781,7 @@ def _sidebar_filters():
         selected_techniques = st.sidebar.multiselect(
             "Techniques",
             tech_codes,
-            format_func=lambda c: next(l for code, l in tech_opts if code == c),
+            format_func=lambda c: next((l for code, l in tech_opts if code == c), str(c)),
             key="sidebar_techniques_pick",
         )
         techniques = csv_from_list(selected_techniques) if selected_techniques else "SA"
@@ -2319,7 +2389,7 @@ def _tab_branches(filters):
         st.info(step_msg)
 
     pat_fallback = _github_pat_config()
-    can_push = val_done and bool(_github_push_config() or pat_fallback)
+    can_push = val_done and bool(st.session_state.get("github_login_ok")) and bool(_github_push_config())
     can_generate = total > 0 and github_ready
     can_validate = branches_available and github_ready
 
@@ -2362,11 +2432,8 @@ def _tab_branches(filters):
         else:
             push_hint = "Validation did not pass for all branches — review the table and re-run **Validate**."
         st.warning("Push locked: %s" % push_hint)
-    elif not can_push and needs_install and pat_fallback:
-        st.info(
-            "GitHub App OAuth lacks **Contents: Read & write** — **Push** will try OAuth first, "
-            "then fall back to the shared PAT in `.env.local`."
-        )
+    elif not bool(st.session_state.get("github_login_ok")) or not bool(_github_push_config()):
+        st.warning("Push locked: connect GitHub on the Branches tab to push.")
     elif not can_push and needs_install:
         st.warning(
             "Push locked: in **GitHub App Settings → Permissions & events → Contents**, "
@@ -2402,7 +2469,7 @@ def _tab_branches(filters):
             "3 — Push to GitHub",
             type="primary" if step_no == 3 else "secondary",
             width="stretch",
-            disabled=not can_push or (needs_install and not pat_fallback),
+            disabled=not can_push,
         )
 
     gen_status = st.session_state.get("pipeline_gen_status") or {}
@@ -2946,7 +3013,7 @@ def _resolve_qa_repo(gh_repo, connected_repos, branch_names=None, list_error=Non
             options=labels,
             index=labels.index(default_label) if default_label in labels else 0,
             format_func=lambda label: _qa_repo_option_label(
-                next(row for row in ranked if row.get("label") == label),
+                next((row for row in ranked if row.get("label") == label), {}),
                 branch_count,
             ),
             help="Choose the repo you see in the Testable QA web UI where your branches are connected.",
@@ -4258,6 +4325,32 @@ def main():
 
 def _main_impl():
     load_env(str(ROOT / ".env.local"))
+
+    # Mint a stable browser id
+    if "sid" not in st.query_params:
+        st.query_params["sid"] = secrets.token_urlsafe(16)
+    sid = st.query_params["sid"]
+
+    # Rehydrate session state from sid cache file
+    secret = os.getenv("SCM_TOKEN_SECRET", "").strip()
+    if secret:
+        cache_dir = ROOT / ".session_cache"
+        sid_file = cache_dir / f"{sid}.json"
+        if not st.session_state.get("qa_login_ok") and sid_file.is_file():
+            try:
+                with open(sid_file, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                email = data.get("qa_email_saved")
+                enc_pwd = data.get("qa_password_saved")
+                if email and enc_pwd:
+                    from lib.scm.token_encryption import decrypt_token
+                    pwd = decrypt_token(enc_pwd)
+                    st.session_state["qa_email_saved"] = email
+                    st.session_state["qa_password_saved"] = pwd
+                    st.session_state["qa_login_ok"] = True
+                    st.session_state["qa_login_msg"] = "Session restored successfully"
+            except Exception:
+                pass
     apply_github_oauth_redirect_uri()
     _handle_oauth_callback()
     _sync_github_session_from_db()
@@ -4273,6 +4366,11 @@ def _main_impl():
         _render_scm_flow()
         return
 
+    if "main_pipeline_tab" not in st.session_state:
+        qp_tab = st.query_params.get("tab")
+        if qp_tab in PIPELINE_TABS:
+            st.session_state["main_pipeline_tab"] = qp_tab
+
     filters = _sidebar_filters()
     _apply_pending_pipeline_tab()
     tab = st.radio(
@@ -4282,6 +4380,9 @@ def _main_impl():
         label_visibility="collapsed",
         key="main_pipeline_tab",
     )
+    if st.query_params.get("tab") != tab:
+        st.query_params["tab"] = tab
+
     if tab == "Branches":
         _tab_branches(filters)
     elif tab == "Whitebox":

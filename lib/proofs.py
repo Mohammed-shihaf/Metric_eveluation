@@ -153,6 +153,8 @@ def whitebox_completion(branches, taxonomy_root="taxonomy_reports", root=None, r
     from lib.registry import load_registry
 
     reg = registry or load_registry()
+    if taxonomy_root == "taxonomy_reports":
+        taxonomy_root = os.environ.get("OUTPUT_DIR", "").strip() or taxonomy_root
     repo_root = Path(root or ROOT)
     tax_root = repo_root / taxonomy_root
     out = {}
@@ -455,6 +457,8 @@ def collect_taxonomy_proof(
     manifest_run=None,
 ):
     """Write taxonomy_report.json (and HTML copy) without fetching S3."""
+    if taxonomy_root == "taxonomy_reports":
+        taxonomy_root = os.environ.get("OUTPUT_DIR", "").strip() or taxonomy_root
     repo_root = Path(root or ROOT)
     from lib.metrics import infer_from_branch_name
 

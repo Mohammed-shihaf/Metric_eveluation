@@ -24,3 +24,4 @@ archive/
 Testabel_Assurance_Studio_Docs/
 docs/images/
 *.xlsx
+.session_cache/

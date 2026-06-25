@@ -1026,6 +1026,10 @@ def push_branches(
             bname = row["branch_name"]
             branch_dir = row["dir"]
 
+            def _progress(step, msg):
+                if progress_callback:
+                    progress_callback(step, idx - 1, total, bname, msg)
+
             if not branch_materialized(branch_dir, tech):
                 out = dict(row)
                 out.update({
@@ -1040,10 +1044,6 @@ def push_branches(
                     stop_reason = out["failure_reason"]
                 _progress("push", "skipped: incomplete branch dir")
                 continue
-
-            def _progress(step, msg):
-                if progress_callback:
-                    progress_callback(step, idx - 1, total, bname, msg)
 
             _progress("push", "pushing to GitHub")
             meta = read_gen_meta(branch_dir)

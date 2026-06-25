@@ -111,7 +111,7 @@ class PlatformClient(object):
         self.views_url = views_url.rstrip("/")
         self.session_token = session_token
 
-    def _request(self, method, url, body=None, accept=None):
+    def _request(self, method, url, body=None, accept=None, timeout=300):
         req = urllib.request.Request(url, method=method)
         req.add_header("Content-Type", "application/json")
         req.add_header("User-Agent", BROWSER_USER_AGENT)
@@ -122,7 +122,7 @@ class PlatformClient(object):
         if body is not None:
             req.data = json.dumps(body).encode("utf-8")
         try:
-            resp = urllib.request.urlopen(req, timeout=300)
+            resp = urllib.request.urlopen(req, timeout=timeout)
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")
             raise RuntimeError("HTTP %s %s %s" % (method, url, detail)) from e
@@ -132,16 +132,17 @@ class PlatformClient(object):
             return json.loads(raw.decode("utf-8"))
         return raw
 
-    def get_json(self, url):
-        return self._request("GET", url)
+    def get_json(self, url, timeout=300):
+        return self._request("GET", url, timeout=timeout)
 
     def post_json(self, url, body):
         return self._request("POST", url, body=body)
 
 
-def resolve_tenant_id(client):
+def resolve_tenant_id(client, timeout=None):
     """Resolve tenant from the authenticated session (QA/live friendly)."""
-    data = client.get_json("%s/v1/me/tenant" % client.identity_url)
+    t = timeout if timeout is not None else 300
+    data = client.get_json("%s/v1/me/tenant" % client.identity_url, timeout=t)
     tenant_id = data.get("tenant_id")
     if not tenant_id:
         raise RuntimeError("Session tenant missing from /v1/me/tenant: %s" % data)
@@ -277,7 +278,8 @@ def verify_login(env_file=None, email=None, password=None, interactive=False):
             max_retries=login_retries,
         )
         client = PlatformClient(identity_url, runtime_url, views_url, token)
-        tenant_id = resolve_tenant_id(client)
+        t_id_timeout = 15 if interactive else None
+        tenant_id = resolve_tenant_id(client, timeout=t_id_timeout)
         return True, "logged in as %s (tenant %s)" % (email, tenant_id)
     except Exception as exc:
         return False, str(exc)

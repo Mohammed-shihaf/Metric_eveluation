@@ -113,8 +113,11 @@ class EnsureLocalBranchesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as work_root:
             local_branch = "DF_MET_Bug_2.6"
             remote_branch = "DF_MET_CC_2.6"
-            os.makedirs(os.path.join(work_root, local_branch))
-            with open(os.path.join(work_root, local_branch, ".gen_meta.json"), "w", encoding="utf-8") as fh:
+            local_dir = os.path.join(work_root, local_branch)
+            os.makedirs(os.path.join(local_dir, "df"))
+            with open(os.path.join(local_dir, "df", "config.py"), "w") as fh:
+                fh.write("# config")
+            with open(os.path.join(local_dir, ".gen_meta.json"), "w", encoding="utf-8") as fh:
                 fh.write('{"strength": 1, "loc": 100}')
 
             push_rows = [
@@ -235,10 +238,11 @@ class PushContinueTests(unittest.TestCase):
 
         with patch("lib.branch_pipeline.check_app_repo_access", return_value=(True, False, "ok")):
             with patch("lib.branch_pipeline.os.path.isdir", return_value=True):
-                with patch("lib.branch_pipeline.read_gen_meta", return_value={"strength": 1, "version": "2.6", "language": "python"}):
-                    with patch("lib.branch_pipeline.generate_branch_files", return_value={}):
-                        with patch("lib.branch_pipeline.push_branch_to_github", side_effect=fake_push):
-                            result = push_branches(rows, github_config)
+                with patch("lib.branch_pipeline.branch_materialized", return_value=True):
+                    with patch("lib.branch_pipeline.read_gen_meta", return_value={"strength": 1, "version": "2.6", "language": "python"}):
+                        with patch("lib.branch_pipeline.generate_branch_files", return_value={}):
+                            with patch("lib.branch_pipeline.push_branch_to_github", side_effect=fake_push):
+                                result = push_branches(rows, github_config)
 
         self.assertFalse(result["success"])
         self.assertEqual(sorted(result["completed"]), ["B1", "B3"])
