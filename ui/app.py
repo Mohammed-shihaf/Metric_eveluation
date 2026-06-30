@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -105,6 +106,19 @@ st.markdown(
     <style>
       [data-testid="stToolbar"], [data-testid="stStatusWidget"],
       #MainMenu, [data-testid="stDecoration"], footer {display: none !important;}
+      [data-testid="stHeader"] {height: 0 !important;}
+      [data-testid="stMainBlockContainer"], .block-container {
+        padding-top: 2rem !important;
+      }
+      .app-title {
+        font-size: 2.1rem;
+        font-weight: 700;
+        color: #1A1A1A;
+        margin: 0;
+        padding: 0;
+        line-height: 1.3;
+        white-space: nowrap;
+      }
       .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stSidebar"] {
         background-color: #FFFFFF !important;
         color: #1A1A1A !important;
@@ -144,16 +158,49 @@ st.markdown(
       .stButton > button[data-testid*="-primary"], .stButton > button[data-testid*="-primary"] * {
         color: #FFFFFF !important;
       }
-      [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] {
-        display: flex !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        z-index: 1000000 !important;
+      [data-testid="stSidebarCollapseButton"] {
+        position: fixed !important;
+        left: -9999px !important;
+        width: 1px !important;
+        height: 1px !important;
+        overflow: hidden !important;
+        opacity: 0 !important;
       }
-      [data-testid="stSidebarCollapsedControl"] button, [data-testid="collapsedControl"] button,
-      [data-testid="stSidebarCollapsedControl"] svg, [data-testid="collapsedControl"] svg {
-        color: #1A1A1A !important;
-        fill: #1A1A1A !important;
+      section[data-testid="stSidebar"] {
+        transform: none !important;
+        margin-left: 0 !important;
+        visibility: visible !important;
+      }
+      section[data-testid="stSidebar"][aria-expanded="false"] {
+        width: 21rem !important;
+        min-width: 21rem !important;
+      }
+      [data-testid="stImage"] [data-testid="StyledFullScreenButton"],
+      [data-testid="stImage"] button {
+        display: none !important;
+      }
+      .mini-accounts {
+        display: none;
+      }
+      .mini-badge {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.72rem;
+        color: #1A1A1A;
+        margin: 6px 0;
+      }
+      .mini-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex: 0 0 auto;
+      }
+      .mini-dot.on {
+        background: #5CB85C;
+      }
+      .mini-dot.off {
+        background: #B0B0B0;
       }
     </style>
     """,
@@ -166,7 +213,7 @@ def _app_header():
     with logo_col:
         st.image(str(LOGO), width=52)
     with title_col:
-        st.title("Testable Assurance Studio")
+        st.markdown("<h1 class='app-title'>Testable Assurance Studio</h1>", unsafe_allow_html=True)
         st.caption("Generate → assert → GitHub · Whitebox + S3 · Local tools · SonarQube · Compare")
 
 
@@ -1766,7 +1813,112 @@ def _resolve_repo_push_rows(in_scope, github_ready, force_refresh=False):
     return rows, all_pushed, True
 
 
+def _render_mini_accounts():
+    gh = bool(st.session_state.get("github_login_ok"))
+    gh_user = (st.session_state.get("github_user_login") or "").strip()
+    qa = bool(st.session_state.get("qa_login_ok"))
+    qa_email = (st.session_state.get("qa_email_saved") or "").strip()
+    html = (
+        "<div class='mini-accounts'>"
+        "<div class='mini-badge' title='GitHub: %s'>"
+        "<span class='mini-dot %s'></span>GH</div>"
+        "<div class='mini-badge' title='Testable QA: %s'>"
+        "<span class='mini-dot %s'></span>QA</div>"
+        "</div>"
+    ) % (
+        gh_user or "not connected",
+        "on" if gh else "off",
+        qa_email or "not connected",
+        "on" if qa else "off",
+    )
+    st.sidebar.markdown(html, unsafe_allow_html=True)
+
+
+def _emit_mini_sidebar_css():
+    st.markdown(
+        """
+        <style>
+          section[data-testid="stSidebar"],
+          section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
+          [data-testid="stSidebar"] {
+            width: 96px !important;
+            min-width: 96px !important;
+            max-width: 96px !important;
+          }
+          [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] > * {
+            display: none !important;
+          }
+          [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] > *:first-child,
+          [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] > *:has(.mini-accounts) {
+            display: block !important;
+          }
+          .mini-accounts {
+            display: flex !important;
+            flex-direction: column;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    components.html(
+        """
+        <script>
+        (function () {
+          function apply() {
+            var doc = window.parent.document;
+            [doc.querySelector('[data-testid="stSidebar"]'),
+             doc.querySelector('[data-testid="stSidebarContent"]')].forEach(function (el) {
+              if (!el) return;
+              el.style.setProperty("width", "96px", "important");
+              el.style.setProperty("min-width", "96px", "important");
+              el.style.setProperty("max-width", "96px", "important");
+            });
+          }
+          apply();
+          window.setTimeout(apply, 50);
+          window.setTimeout(apply, 200);
+          window.setTimeout(apply, 500);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def _clear_mini_sidebar_width():
+    components.html(
+        """
+        <script>
+        (function () {
+          var doc = window.parent.document;
+          [doc.querySelector('[data-testid="stSidebar"]'),
+           doc.querySelector('[data-testid="stSidebarContent"]')].forEach(function (el) {
+            if (!el) return;
+            el.style.removeProperty("width");
+            el.style.removeProperty("min-width");
+            el.style.removeProperty("max-width");
+          });
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def _sidebar_filters():
+    mini = st.session_state.get("sidebar_mini", False)
+    if mini:
+        _emit_mini_sidebar_css()
+    else:
+        _clear_mini_sidebar_width()
+    if st.sidebar.button(
+        "»" if mini else "«",
+        key="sidebar_mini_toggle",
+        help="Expand sidebar" if mini else "Shrink sidebar",
+    ):
+        st.session_state["sidebar_mini"] = not mini
+        st.rerun()
+    _render_mini_accounts()
     st.sidebar.image(str(LOGO), width=120)
     env_file = str(ROOT / ".env.local")
     _sidebar_user_login(env_file)
